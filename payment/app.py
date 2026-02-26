@@ -8,6 +8,16 @@ import redis
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
+import logging
+import sys
+
+# Set up logging to print to the console
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s'
+)
+
 DB_ERROR_STR = "DB error"
 
 
@@ -24,6 +34,17 @@ def close_db_connection():
 
 
 atexit.register(close_db_connection)
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Log the error details
+    app.logger.error(f"Abort triggered or Exception raised: {str(e)}")
+    
+    # Return the JSON response as usual
+    if hasattr(e, 'code'):
+        return jsonify(error=str(e)), e.code
+    return jsonify(error="Internal Server Error"), 500
 
 
 class UserValue(Struct):

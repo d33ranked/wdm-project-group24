@@ -52,6 +52,16 @@ def get_order_from_db(order_id: str) -> OrderValue | None:
         abort(400, f"Order: {order_id} not found!")
     return entry
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Log the error details
+    app.logger.error(f"Abort triggered or Exception raised: {str(e)}")
+    
+    # Return the JSON response as usual
+    if hasattr(e, 'code'):
+        return jsonify(error=str(e)), e.code
+    return jsonify(error="Internal Server Error"), 500
+
 
 @app.post('/create/<user_id>')
 def create_order(user_id: str):
