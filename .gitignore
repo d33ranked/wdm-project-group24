@@ -1,2 +1,6 @@
 .idea
 .DS_Store
+
+.venv
+.vscode
+**/__pycache__/**
