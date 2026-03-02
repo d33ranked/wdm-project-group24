@@ -6,7 +6,7 @@ class OrderValue(Struct):
     user_id: str
     total_cost: int
 
-class StockRequest(Struct):
+class StockRequest(Struct): #TODO I would rename this to ItemRequest to eliminate any confusion,
     item_id: str
     quantity: int
 

@@ -4,25 +4,25 @@ import asyncio
 
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 
-from order.saga_service.models import PaymentRequest
+from order.saga_service.models import BatchStockRequest
 
 from msgspec import msgpack
 
 from typing import Callable, Awaitable, Optional
 
-PaymentCallback = Callable[[PaymentRequest], Awaitable[None]]
+StockCallback = Callable[[BatchStockRequest], Awaitable[None]]
 
-_on_stock_request: Optional[PaymentCallback] = None
-_on_stock_rollback: Optional[PaymentCallback] = None
+_on_stock_request: Optional[StockCallback] = None
+_on_stock_rollback: Optional[StockCallback] = None
 
 
-def register_payment_handlers(
-    on_request: PaymentCallback,
-    on_rollback: PaymentCallback,
+def register_stock_handlers(
+    on_request: StockCallback,
+    on_rollback: StockCallback,
 ) -> None:
     global _on_stock_request, _on_stock_rollback
-    _on_payment_request = on_request
-    _on_payment_rollback = on_rollback
+    _on_stock_request = on_request
+    _on_stock_rollback = on_rollback
 
 
 kafka_producer: AIOKafkaProducer = None
@@ -33,18 +33,18 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
 
     kafka_producer = AIOKafkaProducer(
         bootstrap_servers=os.environ['KAFKA_BOOTSTRAP_SERVERS'],
-        client_id=os.environ['PAYMENT_SERVICE_PRODUCER'],
+        client_id=os.environ['STOCK_SERVICE_PRODUCER'],
         value_serializer=lambda v: msgpack.encode(v),
         key_serializer=lambda k: k.encode('utf-8'),
         acks='all',
     )
 
     kafka_consumer = AIOKafkaConsumer(
-        os.environ['TOPIC_REQUEST_PAYMENT'],
-        os.environ['TOPIC_ROLLBACK_PAYMENT'],
+        os.environ['TOPIC_REQUEST_STOCK'],
+        os.environ['TOPIC_ROLLBACK_STOCK'],
         bootstrap_servers=os.environ['KAFKA_BOOTSTRAP_SERVERS'],
-        client_id=os.environ['PAYMENT_SERVICE_CONSUMER'],
-        group_id=os.environ['GROUP_PAYMENT'],
+        client_id=os.environ['STOCK_SERVICE_CONSUMER'],
+        group_id=os.environ['GROUP_STOCK'],
         value_deserializer=lambda v: msgpack.decode(v),
         key_deserializer=lambda k: k.decode('utf-8'),
     )
@@ -56,35 +56,35 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
 
 async def consume_loop():
     async for message in kafka_consumer:
-        user_id = message.key
+        order_id = message.key
         topic = message.topic
         payload = message.value
 
-        if not isinstance(payload, PaymentRequest):
+        if not isinstance(payload, BatchStockRequest):
             continue
 
-        if topic == os.environ['TOPIC_REQUEST_PAYMENT']:
+        if topic == os.environ['TOPIC_REQUEST_STOCK']:
             result = await _on_stock_request(payload)
             if result:
-                complete_payment(payload)
+                reserve_stock(payload)
             else:
-                fail_payment(payload)
-        elif topic == os.environ['TOPIC_ROLLBACK_PAYMENT']:
+                fail_stock(payload)
+        elif topic == os.environ['TOPIC_ROLLBACK_STOCK']:
             if _on_stock_rollback:
                 await _on_stock_rollback(payload)
 
-async def complete_payment(request: PaymentRequest) -> None:
+async def reserve_stock(request: BatchStockRequest) -> None:
     await kafka_producer.send(
-        os.environ['TOPIC_PAYMENT_COMPLETED'],
-        key=request.user_id,
+        os.environ['TOPIC_STOCK_RESERVED'],
+        key=request.order_id,
         value=request,
-        headers=[('idempotency_key', request.user_id.encode('utf-8'))]
+        headers=[('idempotency_key', request.order_id.encode('utf-8'))]
     )
 
-async def fail_payment(request: PaymentRequest) -> None:
+async def fail_stock(request: BatchStockRequest) -> None:
     await kafka_producer.send(
-        os.environ['TOPIC_PAYMENT_FAILED'],
-        key=request.user_id,
+        os.environ['TOPIC_STOCK_FAILED'],
+        key=request.order_id,
         value=request,
-        headers=[('idempotency_key', request.user_id.encode('utf-8'))]
+        headers=[('idempotency_key', request.order_id.encode('utf-8'))]
     )

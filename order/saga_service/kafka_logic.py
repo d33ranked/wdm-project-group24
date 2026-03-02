@@ -75,12 +75,12 @@ async def request_payment(request: PaymentRequest) -> None:
         headers=[('idempotency_key', request.user_id.encode('utf-8'))]
     )
 
-async def rollback_stock(order_id: str) -> None:
+async def rollback_stock(request: BatchStockRequest) -> None:
     await kafka_producer.send(
         os.environ['TOPIC_ROLLBACK_STOCK'],
-        key=order_id,
-        value={'order_id': order_id},
-        headers=[('idempotency_key', order_id.encode('utf-8'))]
+        key=request.order_id,
+        value=request,
+        headers=[('idempotency_key', request.order_id.encode('utf-8'))]
     )
 
 async def rollback_payment(request: PaymentRequest) -> None:

@@ -15,9 +15,12 @@ async def _checkout(order_id: str):
     }
     pending_sagas[order_id] = saga
 
+    stock_request = BatchStockRequest.from_order_value(order_id, order_entry)
+    payment_request = PaymentRequest.from_order_value(order_entry)
+
     await asyncio.gather(
-        request_stock(BatchStockRequest.from_order_value(order_id, order_entry)),
-        request_payment(PaymentRequest.from_order_value(order_entry)),
+        request_stock(stock_request),
+        request_payment(payment_request),
     )
 
     try:
@@ -40,9 +43,9 @@ async def _checkout(order_id: str):
         app.logger.warning(f"Saga failed for {order_id}: stock_ok={stock_ok}, payment_ok={payment_ok}")
         rollbacks = []
         if stock_ok:
-            rollbacks.append(rollback_stock(order_id))
+            rollbacks.append(rollback_stock(stock_request))
         if payment_ok:
-            rollbacks.append(rollback_payment(PaymentRequest.from_order_value(order_entry)))
+            rollbacks.append(rollback_payment(payment_request))
         if rollbacks:
             await asyncio.gather(*rollbacks)
         return {"error": "Checkout failed"}, 400
