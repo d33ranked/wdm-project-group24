@@ -26,7 +26,7 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
 
     kafka_consumer = AIOKafkaConsumer(
         os.environ['TOPIC_STOCK_RESERVED'],
-        os.environ['TOPIC_PAYMENT_COMPLETED'],
+        os.environ['TOPIC_PAYMENT_COMPLETED'], #TODO shouldn't you also listen to payment_failed? Same for stock
         bootstrap_servers=os.environ['KAFKA_BOOTSTRAP_SERVERS'],
         client_id=os.environ['ORDER_SERVICE_CONSUMER'],
         group_id=os.environ['GROUP_ORDER'],
