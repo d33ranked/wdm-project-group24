@@ -42,7 +42,7 @@ async def _checkout(order_id: str):
         if stock_ok:
             rollbacks.append(rollback_stock(order_id))
         if payment_ok:
-            rollbacks.append(rollback_payment(order_entry.user_id))
+            rollbacks.append(rollback_payment(PaymentRequest.from_order_value(order_entry)))
         if rollbacks:
             await asyncio.gather(*rollbacks)
         return {"error": "Checkout failed"}, 400
