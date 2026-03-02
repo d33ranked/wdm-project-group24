@@ -4,10 +4,26 @@ import asyncio
 
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 
-from order.saga_service.models import OrderValue, BatchStockRequest, PaymentRequest
-from db import db
+from order.saga_service.models import PaymentRequest
 
 from msgspec import msgpack
+
+from typing import Callable, Awaitable, Optional
+
+PaymentCallback = Callable[[PaymentRequest], Awaitable[None]]
+
+_on_payment_request: Optional[PaymentCallback] = None
+_on_payment_rollback: Optional[PaymentCallback] = None
+
+
+def register_payment_handlers(
+    on_request: PaymentCallback,
+    on_rollback: PaymentCallback,
+) -> None:
+    global _on_payment_request, _on_payment_rollback
+    _on_payment_request = on_request
+    _on_payment_rollback = on_rollback
+
 
 kafka_producer: AIOKafkaProducer = None
 kafka_consumer: AIOKafkaConsumer = None
@@ -47,14 +63,14 @@ async def consume_loop():
         success = payload.get('success', False) if isinstance(payload, dict) else getattr(payload, 'success', False)
 
         if topic == os.environ['TOPIC_REQUEST_PAYMENT']:
-            pass
-            # TODO here request the payment
+            result = await _on_payment_request(payload)
+            if result:
+                complete_payment(payload)
+            else:
+                fail_payment(payload)
         elif topic == os.environ['TOPIC_ROLLBACK_PAYMENT']:
-            pass
-            # TODO here rollback the payment: I need more info than just user_id!
-
-def remove_credit(user_id: str, amount: int):
-
+            if _on_payment_rollback:
+                await _on_payment_rollback(payload)
 
 async def complete_payment(request: PaymentRequest) -> None:
     await kafka_producer.send(
