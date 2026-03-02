@@ -26,6 +26,15 @@ Basic project structure with Python's Flask and Redis.
 * `test`
     Folder containing some basic correctness tests for the entire system. (Feel free to enhance them)
 
+### Stress testing
+
+We use locust to do stress testing. To run these tests, follow these instructions:
+
+- Run the project as usual with `docker-compose up --build`.
+- Navigate to `cd test/stess`.
+- To run locust, you can run it from the virtual environment `../../.venv/bin/locust`. Or if you want to use a system installation, simply `locust`.
+- Locust will give you a URL where you can run the tests based on the locustfile that it found in the directory.
+
 ### Deployment types:
 
 #### docker-compose (local development)
