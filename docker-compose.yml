@@ -28,7 +28,7 @@ services:
       - GATEWAY_URL=http://gateway:80
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
-      - env/order_postgres.env
+      - ./env/order_postgres.env
     depends_on:
       - order-db
 
@@ -36,7 +36,7 @@ services:
     image: postgres:17-bookworm
     environment:
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=stock_db
+      - POSTGRES_DB=stock
     command: ["postgres", "-c", "max_prepared_transactions=100"]
     volumes:
       - stock_data:/var/lib/postgresql/data
@@ -46,7 +46,7 @@ services:
     image: stock:latest
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
-      - env/stock_postgres.env
+      - ./env/stock_postgres.env
     depends_on:
       - stock-db
 
@@ -55,7 +55,7 @@ services:
     image: postgres:17-bookworm
     environment:
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=payment_db
+      - POSTGRES_DB=payment
     command: ["postgres", "-c", "max_prepared_transactions=100"]
     volumes:
       - payment_data:/var/lib/postgresql/data
@@ -65,7 +65,7 @@ services:
     image: payment:latest
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
-      - env/payment_postgres.env
+      - ./env/payment_postgres.env
     depends_on:
       - payment-db
 

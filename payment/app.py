@@ -2,113 +2,150 @@ import logging
 import os
 import atexit
 import uuid
-
-import redis
-
-from msgspec import msgpack, Struct
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, abort, Response
 
 DB_ERROR_STR = "DB error"
 
-
 app = Flask("payment-service")
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+# --- DATABASE SETUP ---
+try:
+    db_pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=20,
+        host=os.environ['POSTGRES_HOST'],
+        database=os.environ['POSTGRES_DB'],
+        user=os.environ['POSTGRES_USER'],
+        password=os.environ['POSTGRES_PASSWORD'],
+        port=os.environ.get('POSTGRES_PORT', 5432)
+    )
+except Exception as e:
+    app.logger.error(f"Failed to connect to Postgres: {e}")
+    exit(1)
 
+def get_db_conn():
+    return db_pool.getconn()
 
-def close_db_connection():
-    db.close()
+def release_db_conn(conn):
+    db_pool.putconn(conn)
 
+@atexit.register
+def close_db_pool():
+    db_pool.closeall()
 
-atexit.register(close_db_connection)
+def init_db():
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                credit BIGINT NOT NULL DEFAULT 0
+            );
+        """)
+    conn.commit()
+    release_db_conn(conn)
 
+with app.app_context():
+    init_db()
 
-class UserValue(Struct):
-    credit: int
-
-
-def get_user_from_db(user_id: str) -> UserValue | None:
-    try:
-        # get serialized data
-        entry: bytes = db.get(user_id)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    # deserialize data if it exists else return null
-    entry: UserValue | None = msgpack.decode(entry, type=UserValue) if entry else None
-    if entry is None:
-        # if user does not exist in the database; abort
-        abort(400, f"User: {user_id} not found!")
-    return entry
-
+# --- ROUTES ---
 
 @app.post('/create_user')
 def create_user():
-    key = str(uuid.uuid4())
-    value = msgpack.encode(UserValue(credit=0))
+    user_id = str(uuid.uuid4())
+    conn = get_db_conn()
     try:
-        db.set(key, value)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return jsonify({'user_id': key})
-
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO users (user_id, credit) VALUES (%s, 0)", (user_id,))
+        conn.commit()
+        return jsonify({'user_id': user_id})
+    except Exception:
+        conn.rollback()
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 @app.post('/batch_init/<n>/<starting_money>')
 def batch_init_users(n: int, starting_money: int):
-    n = int(n)
-    starting_money = int(starting_money)
-    kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(UserValue(credit=starting_money))
-                                  for i in range(n)}
+    conn = get_db_conn()
     try:
-        db.mset(kv_pairs)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return jsonify({"msg": "Batch init for users successful"})
-
+        # Using execute_values or a manual loop for bulk insert
+        with conn.cursor() as cur:
+            data = [(str(i), int(starting_money)) for i in range(int(n))]
+            # Efficient bulk insert
+            cur.executemany("INSERT INTO users (user_id, credit) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET credit = EXCLUDED.credit", data)
+        conn.commit()
+        return jsonify({"msg": "Batch init for users successful"})
+    except Exception:
+        conn.rollback()
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 @app.get('/find_user/<user_id>')
 def find_user(user_id: str):
-    user_entry: UserValue = get_user_from_db(user_id)
-    return jsonify(
-        {
-            "user_id": user_id,
-            "credit": user_entry.credit
-        }
-    )
-
+    conn = get_db_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT user_id, credit FROM users WHERE user_id = %s", (user_id,))
+            user = cur.fetchone()
+            if not user:
+                abort(404, f"User: {user_id} not found!")
+            return jsonify(user)
+    finally:
+        release_db_conn(conn)
 
 @app.post('/add_funds/<user_id>/<amount>')
 def add_credit(user_id: str, amount: int):
-    user_entry: UserValue = get_user_from_db(user_id)
-    # update credit, serialize and update database
-    user_entry.credit += int(amount)
+    conn = get_db_conn()
     try:
-        db.set(user_id, msgpack.encode(user_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
-
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET credit = credit + %s WHERE user_id = %s RETURNING credit",
+                (int(amount), user_id)
+            )
+            result = cur.fetchone()
+            if not result:
+                abort(404, "User not found")
+        conn.commit()
+        return Response(f"User: {user_id} credit updated to: {result[0]}", status=200)
+    except Exception:
+        conn.rollback()
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 @app.post('/pay/<user_id>/<amount>')
 def remove_credit(user_id: str, amount: int):
-    app.logger.debug(f"Removing {amount} credit from user: {user_id}")
-    user_entry: UserValue = get_user_from_db(user_id)
-    # update credit, serialize and update database
-    user_entry.credit -= int(amount)
-    if user_entry.credit < 0:
-        abort(400, f"User: {user_id} credit cannot get reduced below zero!")
+    amount = int(amount)
+    conn = get_db_conn()
     try:
-        db.set(user_id, msgpack.encode(user_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
-
+        with conn.cursor() as cur:
+            # Atomic check-and-update
+            cur.execute(
+                "UPDATE users SET credit = credit - %s WHERE user_id = %s AND credit >= %s RETURNING credit",
+                (amount, user_id, amount)
+            )
+            result = cur.fetchone()
+            if not result:
+                # Either user doesn't exist or credit is insufficient
+                cur.execute("SELECT credit FROM users WHERE user_id = %s", (user_id,))
+                user_exists = cur.fetchone()
+                if not user_exists:
+                    abort(404, "User not found")
+                else:
+                    abort(400, "Insufficient credit")
+        conn.commit()
+        return Response(f"User: {user_id} credit updated to: {result[0]}", status=200)
+    except Exception as e:
+        conn.rollback()
+        if hasattr(e, 'code'): raise e # Re-raise Flask aborts
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8000, debug=True)
-else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
-    app.logger.handlers = gunicorn_logger.handlers
-    app.logger.setLevel(gunicorn_logger.level)
+    app.run(host="0.0.0.0", port=5000)

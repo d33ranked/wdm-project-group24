@@ -2,116 +2,157 @@ import logging
 import os
 import atexit
 import uuid
-
-import redis
-
-from msgspec import msgpack, Struct
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, abort, Response
-
 
 DB_ERROR_STR = "DB error"
 
 app = Flask("stock-service")
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+# --- DATABASE SETUP ---
+try:
+    db_pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=20,
+        host=os.environ['POSTGRES_HOST'],
+        database=os.environ['POSTGRES_DB'],
+        user=os.environ['POSTGRES_USER'],
+        password=os.environ['POSTGRES_PASSWORD'],
+        port=os.environ.get('POSTGRES_PORT', 5432)
+    )
+except Exception as e:
+    app.logger.error(f"Failed to connect to Postgres: {e}")
+    exit(1)
 
+def get_db_conn():
+    return db_pool.getconn()
 
-def close_db_connection():
-    db.close()
+def release_db_conn(conn):
+    db_pool.putconn(conn)
 
+@atexit.register
+def close_db_pool():
+    db_pool.closeall()
 
-atexit.register(close_db_connection)
+def init_db():
+    conn = get_db_conn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS stock (
+                item_id TEXT PRIMARY KEY,
+                stock_count INTEGER NOT NULL DEFAULT 0,
+                price INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+    conn.commit()
+    release_db_conn(conn)
 
+with app.app_context():
+    init_db()
 
-class StockValue(Struct):
-    stock: int
-    price: int
-
-
-def get_item_from_db(item_id: str) -> StockValue | None:
-    # get serialized data
-    try:
-        entry: bytes = db.get(item_id)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    # deserialize data if it exists else return null
-    entry: StockValue | None = msgpack.decode(entry, type=StockValue) if entry else None
-    if entry is None:
-        # if item does not exist in the database; abort
-        abort(400, f"Item: {item_id} not found!")
-    return entry
-
+# --- ROUTES ---
 
 @app.post('/item/create/<price>')
 def create_item(price: int):
-    key = str(uuid.uuid4())
-    app.logger.debug(f"Item: {key} created")
-    value = msgpack.encode(StockValue(stock=0, price=int(price)))
+    item_id = str(uuid.uuid4())
+    conn = get_db_conn()
     try:
-        db.set(key, value)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return jsonify({'item_id': key})
-
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO stock (item_id, stock_count, price) VALUES (%s, 0, %s)",
+                (item_id, int(price))
+            )
+        conn.commit()
+        return jsonify({'item_id': item_id})
+    except Exception:
+        conn.rollback()
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 @app.post('/batch_init/<n>/<starting_stock>/<item_price>')
-def batch_init_users(n: int, starting_stock: int, item_price: int):
-    n = int(n)
-    starting_stock = int(starting_stock)
-    item_price = int(item_price)
-    kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(StockValue(stock=starting_stock, price=item_price))
-                                  for i in range(n)}
+def batch_init(n: int, starting_stock: int, item_price: int):
+    conn = get_db_conn()
     try:
-        db.mset(kv_pairs)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return jsonify({"msg": "Batch init for stock successful"})
-
+        with conn.cursor() as cur:
+            data = [(str(i), int(starting_stock), int(item_price)) for i in range(int(n))]
+            cur.executemany(
+                "INSERT INTO stock (item_id, stock_count, price) VALUES (%s, %s, %s) "
+                "ON CONFLICT (item_id) DO UPDATE SET stock_count = EXCLUDED.stock_count, price = EXCLUDED.price",
+                data
+            )
+        conn.commit()
+        return jsonify({"msg": "Batch init for stock successful"})
+    except Exception:
+        conn.rollback()
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 @app.get('/find/<item_id>')
 def find_item(item_id: str):
-    item_entry: StockValue = get_item_from_db(item_id)
-    return jsonify(
-        {
-            "stock": item_entry.stock,
-            "price": item_entry.price
-        }
-    )
-
+    conn = get_db_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT stock_count as stock, price FROM stock WHERE item_id = %s", (item_id,))
+            item = cur.fetchone()
+            if not item:
+                abort(404, f"Item: {item_id} not found!")
+            return jsonify(item)
+    finally:
+        release_db_conn(conn)
 
 @app.post('/add/<item_id>/<amount>')
 def add_stock(item_id: str, amount: int):
-    item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
-    item_entry.stock += int(amount)
+    conn = get_db_conn()
     try:
-        db.set(item_id, msgpack.encode(item_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
-
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE stock SET stock_count = stock_count + %s WHERE item_id = %s RETURNING stock_count",
+                (int(amount), item_id)
+            )
+            result = cur.fetchone()
+            if not result:
+                abort(404, "Item not found")
+        conn.commit()
+        return Response(f"Item: {item_id} stock updated to: {result[0]}", status=200)
+    except Exception:
+        conn.rollback()
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 @app.post('/subtract/<item_id>/<amount>')
 def remove_stock(item_id: str, amount: int):
-    item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
-    item_entry.stock -= int(amount)
-    app.logger.debug(f"Item: {item_id} stock updated to: {item_entry.stock}")
-    if item_entry.stock < 0:
-        abort(400, f"Item: {item_id} stock cannot get reduced below zero!")
+    amount = int(amount)
+    conn = get_db_conn()
     try:
-        db.set(item_id, msgpack.encode(item_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
-
+        with conn.cursor() as cur:
+            # Atomic check-and-update to prevent negative stock
+            cur.execute(
+                "UPDATE stock SET stock_count = stock_count - %s "
+                "WHERE item_id = %s AND stock_count >= %s RETURNING stock_count",
+                (amount, item_id, amount)
+            )
+            result = cur.fetchone()
+            if not result:
+                # Check if item exists to give better error msg
+                cur.execute("SELECT stock_count FROM stock WHERE item_id = %s", (item_id,))
+                exists = cur.fetchone()
+                if not exists:
+                    abort(404, "Item not found")
+                else:
+                    abort(400, "Insufficient stock")
+        conn.commit()
+        return Response(f"Item: {item_id} stock updated to: {result[0]}", status=200)
+    except Exception as e:
+        conn.rollback()
+        if hasattr(e, 'code'): raise e
+        abort(400, DB_ERROR_STR)
+    finally:
+        release_db_conn(conn)
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8000, debug=True)
-else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
-    app.logger.handlers = gunicorn_logger.handlers
-    app.logger.setLevel(gunicorn_logger.level)
+    app.run(host="0.0.0.0", port=5000)
