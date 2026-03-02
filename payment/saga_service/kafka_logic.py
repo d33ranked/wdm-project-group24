@@ -60,7 +60,8 @@ async def consume_loop():
         topic = message.topic
         payload = message.value
 
-        success = payload.get('success', False) if isinstance(payload, dict) else getattr(payload, 'success', False)
+        if not isinstance(payload, PaymentRequest):
+            continue
 
         if topic == os.environ['TOPIC_REQUEST_PAYMENT']:
             result = await _on_payment_request(payload)
@@ -74,7 +75,7 @@ async def consume_loop():
 
 async def complete_payment(request: PaymentRequest) -> None:
     await kafka_producer.send(
-        os.environ['TOPIC_REQUEST_PAYMENT'],
+        os.environ['TOPIC_PAYMENT_COMPLETED'],
         key=request.user_id,
         value=request,
         headers=[('idempotency_key', request.user_id.encode('utf-8'))]
@@ -82,7 +83,7 @@ async def complete_payment(request: PaymentRequest) -> None:
 
 async def fail_payment(request: PaymentRequest) -> None:
     await kafka_producer.send(
-        os.environ['TOPIC_REQUEST_PAYMENT'],
+        os.environ['TOPIC_PAYMENT_FAILED'],
         key=request.user_id,
         value=request,
         headers=[('idempotency_key', request.user_id.encode('utf-8'))]
