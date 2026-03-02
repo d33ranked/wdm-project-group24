@@ -19,11 +19,12 @@ async def handle_payment_request(request: PaymentRequest) -> bool:
         return False
 
     # update credit, serialize and update database
-    user_entry.credit -= int(amount)
-    if user_entry.credit < 0:
+
+    if user_entry.credit < amount:
         return False #TODO maybe change this since we are losing information: what went wrong?
         # abort(400, f"User: {user_id} credit cannot get reduced below zero!")
     try:
+        user_entry.credit -= int(amount)
         db.set(user_id, msgpack.encode(user_entry))
     except redis.exceptions.RedisError:
         # return abort(400, DB_ERROR_STR)

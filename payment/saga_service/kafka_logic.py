@@ -71,7 +71,7 @@ async def consume_loop():
                 fail_payment(payload)
         elif topic == os.environ['TOPIC_ROLLBACK_PAYMENT']:
             if _on_stock_rollback:
-                await _on_stock_rollback(payload)
+                await _on_stock_rollback(payload) # TODO what if this fails?
 
 async def complete_payment(request: PaymentRequest) -> None:
     await kafka_producer.send(

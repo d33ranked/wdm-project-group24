@@ -52,7 +52,7 @@ async def consume_loop():
             continue
 
         if topic == os.environ['TOPIC_STOCK_RESERVED']:
-            saga['stock_ok'] = success
+            saga['stock_ok'] = success # TODO: can you use an OrderValue like this?
             saga['stock_event'].set()
         elif topic == os.environ['TOPIC_PAYMENT_COMPLETED']:
             saga['payment_ok'] = success
@@ -86,7 +86,7 @@ async def rollback_stock(request: BatchStockRequest) -> None:
 async def rollback_payment(request: PaymentRequest) -> None:
     await kafka_producer.send(
         os.environ['TOPIC_ROLLBACK_PAYMENT'],
-        key=request,
+        key=request.user_id,
         value=request,
         headers=[('idempotency_key', request.user_id.encode('utf-8'))]
     )
