@@ -22,11 +22,11 @@ message OrderItem {
 
 // The master request containing everything needed for 2PC
 message PrepareRequest {
-  string transaction_id = 1; // Unique ID for Postgres PREPARE
-  string user_id = 2;        // Needed for Payment
-  string order_id = 3;       // Needed for Order status
-  int32 total_cost = 4;      // Needed for Payment
-  repeated OrderItem items = 5; // Needed for Stock
+  string transaction_id = 1;
+  string user_id = 2;
+  string order_id = 3;
+  int32 total_cost = 4;
+  repeated OrderItem items = 5;
 }
 
 message PrepareResponse {

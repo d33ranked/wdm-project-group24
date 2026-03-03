@@ -28,6 +28,8 @@ services:
     image: order:latest
     environment:
       - GATEWAY_URL=http://gateway:80
+      - ENABLE_2PC=false
+      - ENABLE_GRPC=false
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - ./env/order_postgres.env
