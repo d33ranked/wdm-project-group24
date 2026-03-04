@@ -6,20 +6,20 @@ class OrderValue(Struct):
     user_id: str
     total_cost: int
 
-class StockRequest(Struct): #TODO I would rename this to ItemRequest to eliminate any confusion,
+class ItemRequest(Struct): 
     item_id: str
     quantity: int
 
-class BatchStockRequest(Struct):
+class BatchItemRequest(Struct):
     order_id: str
-    items: list[StockRequest]
+    items: list[ItemRequest]
 
-    def from_order_value(order_id: str, order_value: OrderValue) -> 'BatchStockRequest':
-        items: list[StockRequest] = []
+    def from_order_value(order_id: str, order_value: OrderValue) -> 'BatchItemRequest':
+        items: list[ItemRequest] = []
         for (item_id, quantity) in order_value.items:
-            items.append(StockRequest(item_id=item_id, quantity=quantity))
+            items.append(ItemRequest(item_id=item_id, quantity=quantity))
 
-        return BatchStockRequest(order_id=order_id, items=items)
+        return BatchItemRequest(order_id=order_id, items=items)
 
 class PaymentRequest(Struct):
     user_id: str
@@ -27,3 +27,8 @@ class PaymentRequest(Struct):
 
     def from_order_value(order_value: OrderValue) -> 'PaymentRequest':
         return PaymentRequest(user_id=order_value.user_id, amount=order_value.total_cost)
+
+class OrderCheckoutStatus(Struct):
+    order_id: str
+    payment_success: bool = False
+    stock_success: bool = False
