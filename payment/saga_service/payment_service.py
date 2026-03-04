@@ -2,7 +2,7 @@ from msgspec import msgpack
 
 from order.saga_service.models import PaymentRequest
 
-from payment.saga_service.models import UserValue
+from payment.models import UserValue
 
 from payment.saga_service.kafka_logic import register_payment_handlers
 from payment.saga_service.db import db, get_user_from_db
