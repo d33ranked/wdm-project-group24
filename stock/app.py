@@ -2,24 +2,20 @@ import logging
 import os
 import atexit
 import uuid
-
+import asyncio
+import threading
 import redis
-from time import perf_counter
 
+from time import perf_counter
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response, g
 
+from saga_service import kafka_client 
+from models import StockValue
+from saga_service.db import db
 
 DB_ERROR_STR = "DB error"
-
 app = Flask("stock-service")
-
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
-
-
 
 @app.before_request
 def start_timer():
@@ -30,18 +26,6 @@ def log_response(response):
     duration = perf_counter() - g.start_time
     print(f"STOCK: Request took {duration:.7f} seconds")
     return response
-
-def close_db_connection():
-    db.close()
-
-
-atexit.register(close_db_connection)
-
-
-class StockValue(Struct):
-    stock: int
-    price: int
-
 
 def get_item_from_db(item_id: str) -> StockValue | None:
     # get serialized data
@@ -120,6 +104,34 @@ def remove_stock(item_id: str, amount: int):
         return abort(400, DB_ERROR_STR)
     return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
 
+def close_db_connection():
+    db.close()
+
+
+atexit.register(close_db_connection)
+
+# Single persistent event loop in a background thread
+kafka_client.loop = asyncio.new_event_loop()
+
+
+def start_loop(lp):
+    asyncio.set_event_loop(lp)
+    lp.run_forever()
+
+
+loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
+loop_thread.start()
+
+print("[ORDER] Starting Kafka...")
+try:
+    asyncio.run_coroutine_threadsafe(
+        kafka_client._start_kafka(kafka_client.loop),
+        kafka_client.loop
+    ).result(timeout=30)
+    print("[ORDER] Kafka started successfully")
+except Exception as e:
+    print(f"[ORDER] Kafka startup FAILED: {e}")
+    raise
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)

@@ -26,7 +26,7 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
 
     kafka_consumer = AIOKafkaConsumer(
         os.environ['TOPIC_PAYMENT_REQUEST'],
-        os.environ['TOPIC_ROLLBACK_PAYMENT'],
+        os.environ['TOPIC_PAYMENT_ROLLBACK'],
         bootstrap_servers=os.environ['KAFKA_BOOTSTRAP_SERVERS'],
         group_id=os.environ['GROUP_ORDER'],
         value_deserializer=lambda v: msgpack.decode(v),
