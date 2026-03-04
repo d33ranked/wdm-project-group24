@@ -11,9 +11,9 @@ from time import perf_counter
 from msgspec import msgpack
 
 
-import kafka_client
-from db import db
-from order_service import create_order, get_order_from_db, saga_add_item, saga_checkout
+import saga_service.kafka_client as kafka_client
+from saga_service.db import db
+from saga_service.order_service import create_order, get_order_from_db, saga_add_item, saga_checkout
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"

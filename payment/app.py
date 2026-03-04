@@ -2,23 +2,21 @@ import logging
 import os
 import atexit
 import uuid
-
 import redis
+import asyncio
+import threading
+
+import saga_service.kafka_client as kafka_client
+from saga_service.db import db
+from models import UserValue
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response, g
-
 from time import perf_counter
 
 DB_ERROR_STR = "DB error"
-
-
 app = Flask("payment-service")
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
 
 @app.before_request
 def start_timer():
@@ -29,17 +27,6 @@ def log_response(response):
     duration = perf_counter() - g.start_time
     print(f"PAYMENT: Request took {duration:.7f} seconds")
     return response
-
-def close_db_connection():
-    db.close()
-
-
-atexit.register(close_db_connection)
-
-
-class UserValue(Struct):
-    credit: int
-
 
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
@@ -116,6 +103,35 @@ def remove_credit(user_id: str, amount: int):
         return abort(400, DB_ERROR_STR)
     return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
+
+def close_db_connection():
+    db.close()
+
+
+atexit.register(close_db_connection)
+
+# Single persistent event loop in a background thread
+kafka_client.loop = asyncio.new_event_loop()
+
+
+def start_loop(lp):
+    asyncio.set_event_loop(lp)
+    lp.run_forever()
+
+
+loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
+loop_thread.start()
+
+print("[ORDER] Starting Kafka...")
+try:
+    asyncio.run_coroutine_threadsafe(
+        kafka_client._start_kafka(kafka_client.loop),
+        kafka_client.loop
+    ).result(timeout=30)
+    print("[ORDER] Kafka started successfully")
+except Exception as e:
+    print(f"[ORDER] Kafka startup FAILED: {e}")
+    raise
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)
