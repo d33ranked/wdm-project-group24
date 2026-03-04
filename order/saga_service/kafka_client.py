@@ -1,12 +1,11 @@
-from nt import environ
 import os
 import asyncio
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from msgspec import msgpack
 
-from models import BatchItemRequest, FindStockRequest, PaymentRequest
-from db import db
+from models import BatchItemRequest, PaymentRequest
+from saga_service.db import db
 
 kafka_producer: AIOKafkaProducer = None
 kafka_consumer: AIOKafkaConsumer = None

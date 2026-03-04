@@ -43,9 +43,11 @@ def get_item_from_db(item_id: str) -> StockValue | None:
 
 @app.post('/item/create/<price>')
 def create_item(price: int):
+    print(f"Creating item with price: {price}")
     key = str(uuid.uuid4())
     app.logger.debug(f"Item: {key} created")
     value = msgpack.encode(StockValue(stock=0, price=int(price)))
+    print(f"Item: {key} created with price: {price}")
     try:
         db.set(key, value)
     except redis.exceptions.RedisError:

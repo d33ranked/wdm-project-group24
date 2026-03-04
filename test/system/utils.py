@@ -6,9 +6,9 @@ ORDER_URL = STOCK_URL = PAYMENT_URL = "http://127.0.0.1:8000"
 ########################################################################################################################
 #   STOCK MICROSERVICE FUNCTIONS
 ########################################################################################################################
-def create_item(price: int) -> dict:
-    return requests.post(f"{STOCK_URL}/stock/item/create/{price}").json()
-
+def create_item(price: int) -> tuple[int, dict]:
+    response = requests.post(f"{STOCK_URL}/stock/item/create/{price}")
+    return response.status_code, (response.json() if status_code_is_success(response.status_code) else None)
 
 def find_item(item_id: str) -> dict:
     return requests.get(f"{STOCK_URL}/stock/find/{item_id}").json()
@@ -29,8 +29,9 @@ def payment_pay(user_id: str, amount: int) -> int:
     return requests.post(f"{PAYMENT_URL}/payment/pay/{user_id}/{amount}").status_code
 
 
-def create_user() -> dict:
-    return requests.post(f"{PAYMENT_URL}/payment/create_user").json()
+def create_user() -> tuple[int, dict]:
+    response = requests.post(f"{PAYMENT_URL}/payment/create_user")
+    return response.status_code, (response.json() if status_code_is_success(response.status_code) else None)
 
 
 def find_user(user_id: str) -> dict:
@@ -48,9 +49,10 @@ def create_order(user_id: str) -> dict:
     return requests.post(f"{ORDER_URL}/orders/create/{user_id}").json()
 
 
-def add_item_to_order(order_id: str, item_id: str, quantity: int) -> int:
-    return requests.post(f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}").status_code
-
+def add_item_to_order(order_id: str, item_id: str, quantity: int) -> tuple[int, dict]:
+    response = requests.post(f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}")
+    print(f"Add item to order response: {response.status_code}, {response.text}")
+    return response, find_order(order_id)
 
 def find_order(order_id: str) -> dict:
     return requests.get(f"{ORDER_URL}/orders/find/{order_id}").json()

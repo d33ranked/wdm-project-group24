@@ -4,7 +4,7 @@ import asyncio
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from msgspec import msgpack
 
-from db import db
+from saga_service.db import db
 
 kafka_producer: AIOKafkaProducer = None
 kafka_consumer: AIOKafkaConsumer = None

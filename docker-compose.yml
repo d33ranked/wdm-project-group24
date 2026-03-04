@@ -1,4 +1,3 @@
-version: "3"
 services:
 
   gateway:
@@ -21,6 +20,7 @@ services:
     command: gunicorn -b 0.0.0.0:5000 -w 1 --timeout 30 --log-level=info app:app
     env_file:
       - env/order_redis.env
+      - env/kafka.env
     depends_on:
       - order-db
       - kafka
@@ -37,6 +37,7 @@ services:
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/stock_redis.env
+      - env/kafka.env
     depends_on:
       - stock-db
       - kafka
@@ -53,6 +54,7 @@ services:
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/payment_redis.env
+      - env/kafka.env
     depends_on:
       - payment-db
       - kafka

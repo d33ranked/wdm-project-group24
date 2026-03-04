@@ -13,7 +13,7 @@ from msgspec import msgpack
 
 import saga_service.kafka_client as kafka_client
 from saga_service.db import db
-from saga_service.order_service import create_order, get_order_from_db, saga_add_item, saga_checkout
+from saga_service.order_service import create_order, get_order_from_db, saga_checkout
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -68,7 +68,8 @@ def add_item(order_id: str, item_id: str, quantity: int):
         # Request failed because item does not exist
         abort(400, f"Item: {item_id} does not exist!")
     item_json: dict = item_reply.json()
-    order_entry.items.append((item_id, int(quantity)))
+    current = order_entry.items.get(item_id, 0)
+    order_entry.items[item_id] = current + int(quantity)
     order_entry.total_cost += int(quantity) * item_json["price"]
     try:
         db.set(order_id, msgpack.encode(order_entry))

@@ -4,12 +4,11 @@ import redis
 import uuid
 
 from flask import abort
-from msgspec import msgpack, Struct
+from msgspec import msgpack
 
-from db import db
+from saga_service.db import db
 from models import BatchItemRequest, OrderCheckoutStatus, OrderValue, PaymentRequest
-from kafka_client import pending_sagas, loop, _send_payment_request, _send_payment_rollback, _send_stock_request, _send_stock_rollback
-from models import FindStockRequest
+from saga_service.kafka_client import pending_sagas, loop, _send_payment_request, _send_stock_request
 
 DB_ERROR_STR = "DB error"
 
@@ -61,50 +60,3 @@ async def saga_checkout(order_id: str) -> bool:
     db.set(order_id, msgpack.encode(order_entry))
 
     return True
-
-
-
-# async def saga_add_item(order_id: str, item_id: str, quantity: int) -> bool:
-#     """
-#     Starts the add-item saga: sends a find-stock request and waits
-#     for the price response before returning.
-#     """
-#     order_entry = get_order_from_db(order_id)
-#     if not order_entry:
-#         return False
-
-#     future = loop.create_future()
-#     pending_sagas[order_id] = {'item_id': item_id, 'quantity': quantity, 'future': future}
-#     db.set(f"saga:{order_id}", msgpack.encode({'item_id': item_id, 'quantity': quantity}), ex=30)
-
-#     await _send_find_stock(FindStockRequest(order_id=order_id, item_id=item_id))
-
-#     try:
-#         await asyncio.wait_for(future, timeout=10)
-#         return True
-#     except asyncio.TimeoutError:
-#         db.delete(f"saga:{order_id}")
-#         del pending_sagas[order_id]
-#         raise RuntimeError("Saga timed out waiting for stock response")
-
-
-# async def _complete_add_item(order_id: str, item_id: str, quantity: int, price: int) -> bool:
-#     """
-#     Called by consume_loop when the stock price response arrives.
-#     Writes the final order update to Redis.
-#     """
-#     order_entry = get_order_from_db(order_id)
-#     if not order_entry:
-#         return False
-
-#     current_quantity = order_entry.items.get(item_id, 0)
-#     order_entry.items[item_id] = current_quantity + quantity
-#     order_entry.total_cost += quantity * price
-
-#     try:
-#         db.set(order_id, msgpack.encode(order_entry))
-#     except redis.exceptions.RedisError:
-#         return False
-
-#     print(f"[ORDER] Added item {item_id} (qty: {quantity}, price: {price}) to order {order_id}. Total: {order_entry.total_cost}")
-#     return True

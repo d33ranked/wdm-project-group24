@@ -1,4 +1,3 @@
-from nt import environ
 import os
 import asyncio
 
@@ -6,7 +5,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from msgspec import msgpack
 
 from models import PaymentResponseFailure, PaymentResponseSuccess
-from db import db
+from saga_service.db import db
 
 kafka_producer: AIOKafkaProducer = None
 kafka_consumer: AIOKafkaConsumer = None
@@ -74,7 +73,7 @@ async def consume_loop():
                 )
                 await _send_payment_failure(response)
         
-        if topic == os.environ['TOPIC_ROLLBACK_PAYMENT']:
+        if topic == os.environ['TOPIC_PAYMENT_ROLLBACK']:
             account_status = db.get(payload['user_id'])
             response = PaymentResponseSuccess(
                 order_id=order_id,

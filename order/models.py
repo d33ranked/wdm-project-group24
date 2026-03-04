@@ -2,7 +2,7 @@ from msgspec import Struct
 
 class OrderValue(Struct):
     paid: bool
-    items: list[tuple[str, int]]
+    items: dict[str, int]
     user_id: str
     total_cost: int
 
