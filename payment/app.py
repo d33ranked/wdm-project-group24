@@ -10,9 +10,10 @@ import saga_service.kafka_client as kafka_client
 from saga_service.db import db, wait_for_redis
 from models import UserValue
 
-from msgspec import msgpack, Struct
+from msgspec import msgpack 
 from flask import Flask, jsonify, abort, Response, g
 from time import perf_counter
+from saga_service.db import get_user_from_db
 
 DB_ERROR_STR = "DB error"
 app = Flask("payment-service")
@@ -48,20 +49,6 @@ def readiness_check():
         return jsonify({"status": "not ready", "reason": "kafka not connected"}), 503
 
     return jsonify({"status": "ready"})
-
-
-def get_user_from_db(user_id: str) -> UserValue | None:
-    try:
-        # get serialized data
-        entry: bytes = db.get(user_id)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    # deserialize data if it exists else return null
-    entry: UserValue | None = msgpack.decode(entry, type=UserValue) if entry else None
-    if entry is None:
-        # if user does not exist in the database; abort
-        abort(400, f"User: {user_id} not found!")
-    return entry
 
 
 @app.post('/create_user')
@@ -140,6 +127,7 @@ def start_loop(lp):
 
 loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
 loop_thread.start()
+print(f"[PAYMENT] loop is running: {kafka_client.loop.is_running()}")
 
 print("[PAYMENT] Waiting for Redis...")
 try:

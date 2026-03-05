@@ -4,8 +4,8 @@ import asyncio
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from msgspec import msgpack
 
-from models import PaymentResponseFailure, PaymentResponseSuccess
-from saga_service.db import db
+from models import PaymentResponseFailure, PaymentResponseSuccess, PaymentRequest
+from saga_service.db import db, get_user_from_db
 
 kafka_producer: AIOKafkaProducer = None
 kafka_consumer: AIOKafkaConsumer = None
@@ -43,7 +43,6 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
     else:
         raise RuntimeError("Could not connect to Kafka after 10 attempts")
 
-    # asyncio.ensure_future(consume_loop(), loop=event_loop)
     event_loop.create_task(consume_loop())
 
 
@@ -55,14 +54,23 @@ async def consume_loop():
 
         print(f"[PAYMENT] Received message on topic {topic} for order {order_id} with payload {payload}")
         if topic == os.environ['TOPIC_PAYMENT_REQUEST']:
-            account_status = db.get(payload['user_id'])
-            if payload['amount'] >= 0 and account_status.credit >= payload['amount']:
+            user = get_user_from_db(payload['user_id'])
+            if not user:
+                response = PaymentResponseFailure(
+                    order_id=order_id,
+                    user_id=payload['user_id'],
+                    amount_account=0,
+                    msg="User was not found",
+                )
+                await _send_payment_failure(response)
+
+            if payload['amount'] >= 0 and user.credit >= payload['amount']:
                 response = PaymentResponseSuccess(
                     order_id=order_id,
                     user_id=payload['user_id'],
                     amount_subtracted=payload['amount'],
-                    old_amount=account_status.credit,
-                    new_amount=account_status.credit - payload['amount'],
+                    old_amount=user.credit,
+                    new_amount=user.credit - payload['amount'],
                 )
                 db.update(payload['user_id'], -payload['amount'])
                 await _send_payment_success(response)
@@ -70,21 +78,22 @@ async def consume_loop():
                 response = PaymentResponseFailure(
                     order_id=order_id,
                     user_id=payload['user_id'],
-                    amount_account=account_status.credit,
+                    amount_account=user.credit,
                     msg="Insufficient credit",
                 )
                 await _send_payment_failure(response)
         
         if topic == os.environ['TOPIC_PAYMENT_ROLLBACK']:
-            account_status = db.get(payload['user_id'])
+            user = get_user_from_db(payload['user_id'])
+            assert user, f"rollback failed, because user: {payload['user_id']} does not exist"
             response = PaymentResponseSuccess(
                 order_id=order_id,
                 user_id=payload['user_id'],
                 amount_subtracted=-payload['amount'],
-                old_amount=account_status.credit,
-                new_amount=account_status.credit + payload['amount'],
+                old_amount=user.credit,
+                new_amount=user.credit + payload['amount'],
             )
-            db.update(payload['user_id'], payload['amount'] + account_status.credit)
+            db.update(payload['user_id'], payload['amount'] + user.credit)
             await _send_payment_success(response)
 
         else:

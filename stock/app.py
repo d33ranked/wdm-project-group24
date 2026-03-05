@@ -149,6 +149,7 @@ def start_loop(lp):
 
 loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
 loop_thread.start()
+print(f"[STOCK] loop is running: {kafka_client.loop.is_running()}")
 
 print("[STOCK] Waiting for Redis...")
 try:

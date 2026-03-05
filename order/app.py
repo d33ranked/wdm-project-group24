@@ -21,6 +21,53 @@ GATEWAY_URL = os.environ["GATEWAY_URL"]
 app = Flask("order-service")
 
 
+def start_loop(lp):
+    asyncio.set_event_loop(lp)
+    lp.run_forever()
+
+
+def init_kafka_loop():
+    kafka_client.loop = asyncio.new_event_loop()
+
+    loop_thread = threading.Thread(
+        target=start_loop, args=(kafka_client.loop,), daemon=True
+    )
+    loop_thread.start()
+    print(
+        "[ORDER] loop is started: kafka_client.loop.is_running() = ",
+        kafka_client.loop.is_running(),
+    )
+
+    print("[ORDER] Waiting for Redis...")
+    try:
+        wait_for_redis()
+        print("[ORDER] Redis connected successfully")
+    except Exception as e:
+        print(f"[ORDER] Redis connection FAILED: {e}")
+        raise
+
+    print("[ORDER] Starting Kafka...")
+    try:
+        asyncio.run_coroutine_threadsafe(
+            kafka_client._start_kafka(kafka_client.loop), kafka_client.loop
+        ).result(timeout=30)
+        print("[ORDER] Kafka started successfully")
+    except Exception as e:
+        print(f"[ORDER] Kafka startup FAILED: {e}")
+        raise
+
+
+def post_fork(server, worker):
+    init_kafka_loop()
+
+
+def when_ready(server):
+    init_kafka_loop()
+
+
+init_kafka_loop()
+
+
 @app.before_request
 def start_timer():
     g.start_time = perf_counter()
@@ -33,13 +80,13 @@ def log_response(response):
     return response
 
 
-@app.get('/health')
+@app.get("/health")
 def health_check():
     """Liveness probe - is the service running?"""
     return jsonify({"status": "ok"})
 
 
-@app.get('/ready')
+@app.get("/ready")
 def readiness_check():
     """Readiness probe - is the service ready to accept traffic?"""
     try:
@@ -53,26 +100,28 @@ def readiness_check():
     return jsonify({"status": "ready"})
 
 
-@app.post('/create/<user_id>')
+@app.post("/create/<user_id>")
 def create_order_endpoint(user_id: str):
     print(f"Received request to create order for user {user_id}")
     key = create_order(user_id)
     return jsonify({"order_id": key})
 
 
-@app.get('/find/<order_id>')
+@app.get("/find/<order_id>")
 def find_order(order_id: str):
     order_entry = get_order_from_db(order_id)
     if not order_entry:
         return abort(400, f"Order: {order_id} not found!")
 
-    return jsonify({
-            'order_id': order_id, 
-            'user_id': order_entry.user_id, 
-            'items': order_entry.items, 
-            'total_cost': order_entry.total_cost, 
-            'paid': order_entry.paid
-        })
+    return jsonify(
+        {
+            "order_id": order_id,
+            "user_id": order_entry.user_id,
+            "items": order_entry.items,
+            "total_cost": order_entry.total_cost,
+            "paid": order_entry.paid,
+        }
+    )
 
 
 def send_get_request(url: str):
@@ -87,7 +136,7 @@ def send_get_request(url: str):
         return response
 
 
-@app.post('/addItem/<order_id>/<item_id>/<quantity>')
+@app.post("/addItem/<order_id>/<item_id>/<quantity>")
 def add_item(order_id: str, item_id: str, quantity: int):
     order_entry = get_order_from_db(order_id)
     item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
@@ -102,24 +151,26 @@ def add_item(order_id: str, item_id: str, quantity: int):
         db.set(order_id, msgpack.encode(order_entry))
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"Item: {item_id} added to: {order_id} price updated to: {order_entry.total_cost}",
-                    status=200)
+    return Response(
+        f"Item: {item_id} added to: {order_id} price updated to: {order_entry.total_cost}",
+        status=200,
+    )
 
 
-@app.post('/checkout/<order_id>')
+@app.post("/checkout/<order_id>")
 def checkout(order_id: str):
     app.logger.debug(f"Checking out {order_id}")
     print(f"Received request to checkout order {order_id}")
+    print(f"Client loop is running: {kafka_client.loop.is_running() if kafka_client.loop else 'loop is None'}")
     future = asyncio.run_coroutine_threadsafe(
-        saga_checkout(order_id),
-        kafka_client.loop
+        saga_checkout(order_id), kafka_client.loop
     )
 
     try:
         future.result(timeout=15)
     except Exception as e:
         return abort(400, str(e))
-    return jsonify({'status': 'success'})
+    return jsonify({"status": "success"})
 
 
 def close_db_connection():
@@ -128,39 +179,14 @@ def close_db_connection():
 
 atexit.register(close_db_connection)
 
-# Single persistent event loop in a background thread
-kafka_client.loop = asyncio.new_event_loop()
 
-
-def start_loop(lp):
-    asyncio.set_event_loop(lp)
-    lp.run_forever()
-
-
-loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
-loop_thread.start()
-
-print("[ORDER] Waiting for Redis...")
-try:
-    wait_for_redis()
-    print("[ORDER] Redis connected successfully")
-except Exception as e:
-    print(f"[ORDER] Redis connection FAILED: {e}")
-    raise
-
-print("[ORDER] Starting Kafka...")
-try:
-    asyncio.run_coroutine_threadsafe(
-        kafka_client._start_kafka(kafka_client.loop), kafka_client.loop
-    ).result(timeout=30)
-    print("[ORDER] Kafka started successfully")
-except Exception as e:
-    print(f"[ORDER] Kafka startup FAILED: {e}")
-    raise
+def worker_int(worker):
+    pass
 
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
+
 else:
     gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers

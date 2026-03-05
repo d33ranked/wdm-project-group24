@@ -8,7 +8,7 @@ from msgspec import msgpack
 
 from saga_service.db import db
 from models import BatchItemRequest, OrderCheckoutStatus, OrderValue, PaymentRequest
-from saga_service.kafka_client import pending_sagas, loop, _send_payment_request, _send_stock_request
+import saga_service.kafka_client as kafka_client
 
 DB_ERROR_STR = "DB error"
 
@@ -44,17 +44,19 @@ async def saga_checkout(order_id: str) -> bool:
     if order_entry.total_cost == 0 or not order_entry.items or len(order_entry.items) == 0:
         raise Exception(f"Order {order_id} has no items")
 
+    assert kafka_client.loop is not None, "Event loop is not initialized"
+
     print(f"Starting checkout for order {order_id} with total cost {order_entry.total_cost}")
-    future = loop.create_future()
-    pending_sagas[order_id] = future
+    future = kafka_client.loop.create_future()
+    kafka_client.pending_sagas[order_id] = future
     saga = OrderCheckoutStatus(order_id=order_id) 
     db.set(f"checkout_status:{order_id}", msgpack.encode(saga))
 
     checkout_stock_request = BatchItemRequest.from_order_value(order_id, order_entry)
-    checkout_payment_request = PaymentRequest.from_order_value(order_entry)
+    checkout_payment_request = PaymentRequest.from_order_value(order_id, order_entry)
 
-    await _send_stock_request(checkout_stock_request)
-    await _send_payment_request(checkout_payment_request)
+    await kafka_client._send_stock_request(checkout_stock_request)
+    await kafka_client._send_payment_request(checkout_payment_request)
     print(f"Sent stock and payment requests for order {order_id}, waiting for responses...")
     await future
 

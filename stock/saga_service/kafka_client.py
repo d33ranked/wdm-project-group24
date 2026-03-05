@@ -1,5 +1,6 @@
 import os
 import asyncio
+import redis 
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from msgspec import msgpack
@@ -42,7 +43,6 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
     else:
         raise RuntimeError("Could not connect to Kafka after 10 attempts")
 
-    # asyncio.ensure_future(consume_loop(), loop=event_loop)
     event_loop.create_task(consume_loop())
 
 
@@ -56,25 +56,47 @@ async def consume_loop():
         if topic == os.environ['TOPIC_STOCK_REQUEST']:
             print(f"Received stock request for order {order_id}: {payload}")
 
-            # Check if we have enough stock
             to_update = payload["items"]
-            async with db.transaction() as transaction:
-                for (item, amount) in to_update:
-                    stock_value = await db.fetchrow("SELECT stock, price FROM stock WHERE id=$1", item)
-                    if stock_value is None:
-                        await _send_stock_failure(order_id, f"Item {item} not found")
-                        print(f"Item {item} not found for order {order_id}")
-                        transaction.rollback()
-                        return
-                    elif stock_value.stock < amount:
-                        await _send_stock_failure(order_id, f"Not enough stock for item {item}")
-                        print(f"Not enough stock for item {item} in order {order_id}")
-                        transaction.rollback()
-                        return
-                    else:
-                        await db.execute("UPDATE stock SET stock = stock - $1 WHERE id=$2", amount, item)
-                        
-            await _send_stock_success(order_id)
+            keys = [item for (item, _) in to_update]
+
+            try:
+                with db.pipeline() as pipe:
+                    while True:
+                        try:
+                            pipe.watch(*keys)  # Watch all keys for changes
+
+                            # Read current stock values
+                            stock_values = {}
+                            for (item, amount) in to_update:
+                                raw = pipe.get(item)  # Still in immediate mode after watch
+                                if raw is None:
+                                    await _send_stock_failure(order_id, f"Item {item} not found")
+                                    print(f"Item {item} not found for order {order_id}")
+                                    pipe.reset()
+                                    return
+                                stock = int(raw)
+                                if stock < amount:
+                                    await _send_stock_failure(order_id, f"Not enough stock for item {item}")
+                                    print(f"Not enough stock for item {item} in order {order_id}")
+                                    pipe.reset()
+                                    return
+                                stock_values[item] = stock
+
+                            # Queue all updates atomically
+                            pipe.multi()
+                            for (item, amount) in to_update:
+                                pipe.set(item, stock_values[item] - amount)
+                            pipe.execute()  # Fails if any watched key changed
+                            break  # Success
+
+                        except redis.WatchError:
+                            print(f"Race condition detected for order {order_id}, retrying...")
+                            continue  # Retry the whole transaction
+
+                await _send_stock_success(order_id)
+
+            except Exception as e:
+                await _send_stock_failure(order_id, str(e))
 
         if topic == os.environ['TOPIC_STOCK_ROLLBACK']:
             print(f"Received stock rollback for order {order_id}: {payload}")

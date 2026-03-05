@@ -48,7 +48,6 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
     else:
         raise RuntimeError("Could not connect to Kafka after 10 attempts")
 
-    # asyncio.ensure_future(consume_loop(), loop=event_loop)
     event_loop.create_task(consume_loop())
 
 
