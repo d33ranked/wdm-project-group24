@@ -7,7 +7,7 @@ import asyncio
 import threading
 
 import saga_service.kafka_client as kafka_client
-from saga_service.db import db
+from saga_service.db import db, wait_for_redis
 from models import UserValue
 
 from msgspec import msgpack, Struct
@@ -22,11 +22,33 @@ app = Flask("payment-service")
 def start_timer():
     g.start_time = perf_counter()
 
+
 @app.after_request
 def log_response(response):
     duration = perf_counter() - g.start_time
     print(f"PAYMENT: Request took {duration:.7f} seconds")
     return response
+
+
+@app.get('/health')
+def health_check():
+    """Liveness probe - is the service running?"""
+    return jsonify({"status": "ok"})
+
+
+@app.get('/ready')
+def readiness_check():
+    """Readiness probe - is the service ready to accept traffic?"""
+    try:
+        db.ping()
+    except redis.exceptions.RedisError:
+        return jsonify({"status": "not ready", "reason": "redis not connected"}), 503
+
+    if kafka_client.kafka_producer is None or kafka_client.kafka_consumer is None:
+        return jsonify({"status": "not ready", "reason": "kafka not connected"}), 503
+
+    return jsonify({"status": "ready"})
+
 
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
@@ -58,8 +80,9 @@ def create_user():
 def batch_init_users(n: int, starting_money: int):
     n = int(n)
     starting_money = int(starting_money)
-    kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(UserValue(credit=starting_money))
-                                  for i in range(n)}
+    kv_pairs: dict[str, bytes] = {
+        f"{i}": msgpack.encode(UserValue(credit=starting_money)) for i in range(n)
+    }
     try:
         db.mset(kv_pairs)
     except redis.exceptions.RedisError:
@@ -67,18 +90,13 @@ def batch_init_users(n: int, starting_money: int):
     return jsonify({"msg": "Batch init for users successful"})
 
 
-@app.get('/find_user/<user_id>')
+@app.get("/find_user/<user_id>")
 def find_user(user_id: str):
     user_entry: UserValue = get_user_from_db(user_id)
-    return jsonify(
-        {
-            "user_id": user_id,
-            "credit": user_entry.credit
-        }
-    )
+    return jsonify({"user_id": user_id, "credit": user_entry.credit})
 
 
-@app.post('/add_funds/<user_id>/<amount>')
+@app.post("/add_funds/<user_id>/<amount>")
 def add_credit(user_id: str, amount: int):
     user_entry: UserValue = get_user_from_db(user_id)
     # update credit, serialize and update database
@@ -123,20 +141,27 @@ def start_loop(lp):
 loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
 loop_thread.start()
 
-print("[ORDER] Starting Kafka...")
+print("[PAYMENT] Waiting for Redis...")
 try:
-    asyncio.run_coroutine_threadsafe(
-        kafka_client._start_kafka(kafka_client.loop),
-        kafka_client.loop
-    ).result(timeout=30)
-    print("[ORDER] Kafka started successfully")
+    wait_for_redis()
+    print("[PAYMENT] Redis connected successfully")
 except Exception as e:
-    print(f"[ORDER] Kafka startup FAILED: {e}")
+    print(f"[PAYMENT] Redis connection FAILED: {e}")
     raise
 
-if __name__ == '__main__':
+print("[PAYMENT] Starting Kafka...")
+try:
+    asyncio.run_coroutine_threadsafe(
+        kafka_client._start_kafka(kafka_client.loop), kafka_client.loop
+    ).result(timeout=30)
+    print("[PAYMENT] Kafka started successfully")
+except Exception as e:
+    print(f"[PAYMENT] Kafka startup FAILED: {e}")
+    raise
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)

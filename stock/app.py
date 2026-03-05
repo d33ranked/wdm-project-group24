@@ -10,22 +10,45 @@ from time import perf_counter
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response, g
 
-from saga_service import kafka_client 
+from saga_service import kafka_client
 from models import StockValue
-from saga_service.db import db
+from saga_service.db import db, wait_for_redis
 
 DB_ERROR_STR = "DB error"
 app = Flask("stock-service")
 
+
 @app.before_request
 def start_timer():
     g.start_time = perf_counter()
+
 
 @app.after_request
 def log_response(response):
     duration = perf_counter() - g.start_time
     print(f"STOCK: Request took {duration:.7f} seconds")
     return response
+
+
+@app.get("/health")
+def health_check():
+    """Liveness probe - is the service running?"""
+    return jsonify({"status": "ok"})
+
+
+@app.get("/ready")
+def readiness_check():
+    """Readiness probe - is the service ready to accept traffic?"""
+    try:
+        db.ping()
+    except redis.exceptions.RedisError:
+        return jsonify({"status": "not ready", "reason": "redis not connected"}), 503
+
+    if kafka_client.kafka_producer is None or kafka_client.kafka_consumer is None:
+        return jsonify({"status": "not ready", "reason": "kafka not connected"}), 503
+
+    return jsonify({"status": "ready"})
+
 
 def get_item_from_db(item_id: str) -> StockValue | None:
     # get serialized data
@@ -60,8 +83,10 @@ def batch_init_users(n: int, starting_stock: int, item_price: int):
     n = int(n)
     starting_stock = int(starting_stock)
     item_price = int(item_price)
-    kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(StockValue(stock=starting_stock, price=item_price))
-                                  for i in range(n)}
+    kv_pairs: dict[str, bytes] = {
+        f"{i}": msgpack.encode(StockValue(stock=starting_stock, price=item_price))
+        for i in range(n)
+    }
     try:
         db.mset(kv_pairs)
     except redis.exceptions.RedisError:
@@ -106,6 +131,7 @@ def remove_stock(item_id: str, amount: int):
         return abort(400, DB_ERROR_STR)
     return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
 
+
 def close_db_connection():
     db.close()
 
@@ -124,20 +150,27 @@ def start_loop(lp):
 loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
 loop_thread.start()
 
-print("[ORDER] Starting Kafka...")
+print("[STOCK] Waiting for Redis...")
 try:
-    asyncio.run_coroutine_threadsafe(
-        kafka_client._start_kafka(kafka_client.loop),
-        kafka_client.loop
-    ).result(timeout=30)
-    print("[ORDER] Kafka started successfully")
+    wait_for_redis()
+    print("[STOCK] Redis connected successfully")
 except Exception as e:
-    print(f"[ORDER] Kafka startup FAILED: {e}")
+    print(f"[STOCK] Redis connection FAILED: {e}")
     raise
 
-if __name__ == '__main__':
+print("[STOCK] Starting Kafka...")
+try:
+    asyncio.run_coroutine_threadsafe(
+        kafka_client._start_kafka(kafka_client.loop), kafka_client.loop
+    ).result(timeout=30)
+    print("[STOCK] Kafka started successfully")
+except Exception as e:
+    print(f"[STOCK] Kafka startup FAILED: {e}")
+    raise
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)

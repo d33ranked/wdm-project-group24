@@ -12,12 +12,12 @@ from msgspec import msgpack
 
 
 import saga_service.kafka_client as kafka_client
-from saga_service.db import db
+from saga_service.db import db, wait_for_redis
 from saga_service.order_service import create_order, get_order_from_db, saga_checkout
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
-GATEWAY_URL = os.environ['GATEWAY_URL']
+GATEWAY_URL = os.environ["GATEWAY_URL"]
 app = Flask("order-service")
 
 
@@ -33,11 +33,31 @@ def log_response(response):
     return response
 
 
+@app.get('/health')
+def health_check():
+    """Liveness probe - is the service running?"""
+    return jsonify({"status": "ok"})
+
+
+@app.get('/ready')
+def readiness_check():
+    """Readiness probe - is the service ready to accept traffic?"""
+    try:
+        db.ping()
+    except redis.exceptions.RedisError:
+        return jsonify({"status": "not ready", "reason": "redis not connected"}), 503
+
+    if kafka_client.kafka_producer is None or kafka_client.kafka_consumer is None:
+        return jsonify({"status": "not ready", "reason": "kafka not connected"}), 503
+
+    return jsonify({"status": "ready"})
+
+
 @app.post('/create/<user_id>')
 def create_order_endpoint(user_id: str):
     print(f"Received request to create order for user {user_id}")
     key = create_order(user_id)
-    return jsonify({'order_id': key})
+    return jsonify({"order_id": key})
 
 
 @app.get('/find/<order_id>')
@@ -47,6 +67,7 @@ def find_order(order_id: str):
         return abort(400, f"Order: {order_id} not found!")
 
     return jsonify(order_entry)
+
 
 def send_get_request(url: str):
     try:
@@ -112,11 +133,18 @@ def start_loop(lp):
 loop_thread = threading.Thread(target=start_loop, args=(kafka_client.loop,), daemon=True)
 loop_thread.start()
 
+print("[ORDER] Waiting for Redis...")
+try:
+    wait_for_redis()
+    print("[ORDER] Redis connected successfully")
+except Exception as e:
+    print(f"[ORDER] Redis connection FAILED: {e}")
+    raise
+
 print("[ORDER] Starting Kafka...")
 try:
     asyncio.run_coroutine_threadsafe(
-        kafka_client._start_kafka(kafka_client.loop),
-        kafka_client.loop
+        kafka_client._start_kafka(kafka_client.loop), kafka_client.loop
     ).result(timeout=30)
     print("[ORDER] Kafka started successfully")
 except Exception as e:
@@ -124,9 +152,9 @@ except Exception as e:
     raise
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)

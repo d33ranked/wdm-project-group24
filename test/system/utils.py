@@ -1,6 +1,45 @@
 import requests
+import time
 
 ORDER_URL = STOCK_URL = PAYMENT_URL = "http://127.0.0.1:8000"
+
+
+def wait_for_service(url: str, timeout: float = 30.0, interval: float = 1.0) -> bool:
+    """Wait for a service to become ready by polling /ready endpoint."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(f"{url}/ready", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "ready":
+                    return True
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(interval)
+
+    print("Couldnt reach service at {url} within {timeout} seconds")
+    return False
+
+
+def wait_for_all_services(timeout: float = 30.0) -> bool:
+    """Wait for all microservices to become ready."""
+    services = [
+        ("orders", ORDER_URL),
+        ("stock", STOCK_URL),
+        ("payment", PAYMENT_URL),
+    ]
+
+    all_ready = True
+    for name, url in services:
+        print(f"Waiting for {name} service to be ready...")
+        if not wait_for_service(f"{url}/{name}", timeout):
+            print(f"{name} service failed to become ready within {timeout}s")
+            all_ready = False
+        else:
+            print(f"{name} service is ready")
+
+    return all_ready
 
 
 ########################################################################################################################
@@ -31,7 +70,9 @@ def payment_pay(user_id: str, amount: int) -> int:
 
 def create_user() -> tuple[int, dict]:
     response = requests.post(f"{PAYMENT_URL}/payment/create_user")
-    return response.status_code, (response.json() if status_code_is_success(response.status_code) else None)
+    return response.status_code, (
+        response.json() if status_code_is_success(response.status_code) else None
+    )
 
 
 def find_user(user_id: str) -> dict:
@@ -39,7 +80,9 @@ def find_user(user_id: str) -> dict:
 
 
 def add_credit_to_user(user_id: str, amount: float) -> int:
-    return requests.post(f"{PAYMENT_URL}/payment/add_funds/{user_id}/{amount}").status_code
+    return requests.post(
+        f"{PAYMENT_URL}/payment/add_funds/{user_id}/{amount}"
+    ).status_code
 
 
 ########################################################################################################################
@@ -50,9 +93,12 @@ def create_order(user_id: str) -> dict:
 
 
 def add_item_to_order(order_id: str, item_id: str, quantity: int) -> tuple[int, dict]:
-    response = requests.post(f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}")
+    response = requests.post(
+        f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}"
+    )
     print(f"Add item to order response: {response.status_code}, {response.text}")
     return response, find_order(order_id)
+
 
 def find_order(order_id: str) -> dict:
     return requests.get(f"{ORDER_URL}/orders/find/{order_id}").json()
