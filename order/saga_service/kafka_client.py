@@ -48,7 +48,8 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
     else:
         raise RuntimeError("Could not connect to Kafka after 10 attempts")
 
-    asyncio.ensure_future(consume_loop(), loop=event_loop)
+    # asyncio.ensure_future(consume_loop(), loop=event_loop)
+    event_loop.create_task(consume_loop())
 
 
 async def consume_loop():
@@ -56,6 +57,7 @@ async def consume_loop():
         order_id = message.key
         topic = message.topic
         payload = message.value
+        print(f"[ORDER] Received message on topic {topic} for order {order_id} with payload {payload}")
 
         if topic == os.environ['TOPIC_STOCK_RESPONSE_SUCCESS']:
             current_checkout_status = db.get(f"checkout_status:{order_id}")
@@ -63,6 +65,7 @@ async def consume_loop():
                 print(f"[ORDER] Received stock response for unknown order {order_id}, skipping")
                 continue
             
+            print(f"[ORDER] Received stock response success for order {order_id}")
             current_checkout_status['stock_success'] = True
             db.set(f"checkout_status:{order_id}", current_checkout_status)
             _maybe_resolve_saga(order_id, current_checkout_status)
@@ -73,6 +76,7 @@ async def consume_loop():
                 print(f"[ORDER] Received payment response for unknown order {order_id}, skipping")
                 continue
             
+            print(f"[ORDER] Received payment response success for order {order_id}")
             current_checkout_status['payment_success'] = True
             db.set(f"checkout_status:{order_id}", current_checkout_status)
             _maybe_resolve_saga(order_id, current_checkout_status)
@@ -107,6 +111,7 @@ async def consume_loop():
 
 def _maybe_resolve_saga(order_id: str, status: dict):
     """Resolve the saga future with success once both stock and payment have succeeded."""
+    print(f"Checking if saga for order {order_id} can be resolved with status {status}")
     if status.get('stock_success') and status.get('payment_success'):
         db.delete(f"checkout_status:{order_id}")
         future = pending_sagas.pop(order_id, None)
@@ -116,6 +121,7 @@ def _maybe_resolve_saga(order_id: str, status: dict):
 
 def _fail_saga(order_id: str, reason: str):
     """Resolve the saga future with an exception (failure path)."""
+    print(f"Failed saga for order {order_id} with reason: {reason}")
     future = pending_sagas.pop(order_id, None)
     db.delete(f"checkout_status:{order_id}")
 

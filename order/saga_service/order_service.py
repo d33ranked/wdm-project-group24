@@ -44,6 +44,7 @@ async def saga_checkout(order_id: str) -> bool:
     if order_entry.total_cost == 0 or not order_entry.items or len(order_entry.items) == 0:
         raise Exception(f"Order {order_id} has no items")
 
+    print(f"Starting checkout for order {order_id} with total cost {order_entry.total_cost}")
     future = loop.create_future()
     pending_sagas[order_id] = future
     saga = OrderCheckoutStatus(order_id=order_id) 
@@ -54,6 +55,7 @@ async def saga_checkout(order_id: str) -> bool:
 
     await _send_stock_request(checkout_stock_request)
     await _send_payment_request(checkout_payment_request)
+    print(f"Sent stock and payment requests for order {order_id}, waiting for responses...")
     await future
 
     order_entry.paid = True

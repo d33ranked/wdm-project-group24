@@ -7,9 +7,12 @@ services:
     ports:
       - "8000:80"
     depends_on:
-      - order-service
-      - stock-service
-      - payment-service
+      order-service:
+        condition: service_healthy
+      stock-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
 
   order-service:
     build: ./order
@@ -22,12 +25,26 @@ services:
       - env/order_redis.env
       - env/kafka.env
     depends_on:
-      - order-db
-      - kafka
+      order-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
 
   order-db:
     image: redis:7.2-bookworm
     command: redis-server --requirepass redis --maxmemory 512mb
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   stock-service:
     build: ./stock
@@ -39,12 +56,26 @@ services:
       - env/stock_redis.env
       - env/kafka.env
     depends_on:
-      - stock-db
-      - kafka
+      stock-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
 
   stock-db:
     image: redis:7.2-bookworm
     command: redis-server --requirepass redis --maxmemory 512mb
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   payment-service:
     build: ./payment
@@ -56,12 +87,26 @@ services:
       - env/payment_redis.env
       - env/kafka.env
     depends_on:
-      - payment-db
-      - kafka
+      payment-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
 
   payment-db:
     image: redis:7.2-bookworm
     command: redis-server --requirepass redis --maxmemory 512mb
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "redis", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   kafka:
     image: apache/kafka:latest
@@ -86,13 +131,20 @@ services:
       - env/kafka.env
     volumes:
       - kafka_data:/apache/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     ports:
       - "8080:8080"
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     environment:
       - KAFKA_CLUSTERS_0_NAME=local
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092

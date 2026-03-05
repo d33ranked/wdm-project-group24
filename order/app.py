@@ -66,7 +66,13 @@ def find_order(order_id: str):
     if not order_entry:
         return abort(400, f"Order: {order_id} not found!")
 
-    return jsonify(order_entry)
+    return jsonify({
+            'order_id': order_id, 
+            'user_id': order_entry.user_id, 
+            'items': order_entry.items, 
+            'total_cost': order_entry.total_cost, 
+            'paid': order_entry.paid
+        })
 
 
 def send_get_request(url: str):
@@ -103,6 +109,7 @@ def add_item(order_id: str, item_id: str, quantity: int):
 @app.post('/checkout/<order_id>')
 def checkout(order_id: str):
     app.logger.debug(f"Checking out {order_id}")
+    print(f"Received request to checkout order {order_id}")
     future = asyncio.run_coroutine_threadsafe(
         saga_checkout(order_id),
         kafka_client.loop

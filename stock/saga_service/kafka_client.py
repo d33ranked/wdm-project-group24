@@ -42,7 +42,8 @@ async def _start_kafka(event_loop: asyncio.AbstractEventLoop):
     else:
         raise RuntimeError("Could not connect to Kafka after 10 attempts")
 
-    asyncio.ensure_future(consume_loop(), loop=event_loop)
+    # asyncio.ensure_future(consume_loop(), loop=event_loop)
+    event_loop.create_task(consume_loop())
 
 
 async def consume_loop():
@@ -51,6 +52,7 @@ async def consume_loop():
         topic = message.topic
         payload = message.value
 
+        print(f"[STOCK] Received message on topic {topic} for order {order_id} with payload {payload}")
         if topic == os.environ['TOPIC_STOCK_REQUEST']:
             print(f"Received stock request for order {order_id}: {payload}")
 

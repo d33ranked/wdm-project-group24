@@ -70,9 +70,8 @@ def payment_pay(user_id: str, amount: int) -> int:
 
 def create_user() -> tuple[int, dict]:
     response = requests.post(f"{PAYMENT_URL}/payment/create_user")
-    return response.status_code, (
-        response.json() if status_code_is_success(response.status_code) else None
-    )
+    print(f"Create user response: {response.status_code}, {response.text}")
+    return response.status_code, (response.json() if status_code_is_success(response.status_code) else None)
 
 
 def find_user(user_id: str) -> dict:
