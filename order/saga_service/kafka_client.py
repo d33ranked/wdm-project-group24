@@ -145,7 +145,7 @@ async def _send_stock_request(request: BatchItemRequest) -> None:
 
 async def _send_payment_rollback(request: PaymentRequest) -> None:
     await kafka_producer.send(
-        os.environ['TOPIC_PAYEMENT_ROLLBACK'],
+        os.environ['TOPIC_PAYMENT_ROLLBACK'],
         key=request.order_id,
         value=request,
     )
