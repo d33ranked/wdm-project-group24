@@ -92,12 +92,10 @@ def create_order(user_id: str) -> dict:
     return requests.post(f"{ORDER_URL}/orders/create/{user_id}").json()
 
 
-def add_item_to_order(order_id: str, item_id: str, quantity: int) -> tuple[int, dict]:
-    response = requests.post(
-        f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}"
-    )
+def add_item_to_order(order_id: str, item_id: str, quantity: int) -> int:
+    response = requests.post(f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}")
     print(f"Add item to order response: {response.status_code}, {response.text}")
-    return response, find_order(order_id)
+    return response.status_code
 
 
 def find_order(order_id: str) -> dict:
