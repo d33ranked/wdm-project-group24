@@ -87,7 +87,6 @@ class TestMicroservices(unittest.TestCase):
     def test_order(self):
         # Test /payment/pay/<user_id>/<order_id>
         (status_code, user) = tu.create_user()
-        print(f"Create user response: {status_code}, {user}")
         self.assertTrue(tu.status_code_is_success(status_code))
         self.assertIn("user_id", user)
 

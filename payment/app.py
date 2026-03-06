@@ -6,14 +6,13 @@ import redis
 import asyncio
 import threading
 
-import saga_service.kafka_client as kafka_client
-from saga_service.db import db, wait_for_redis
 from models import UserValue
+import saga_service.kafka_client as kafka_client
+from saga_service.db import db, wait_for_redis, get_user_from_db
 
 from msgspec import msgpack 
 from flask import Flask, jsonify, abort, Response, g
 from time import perf_counter
-from saga_service.db import get_user_from_db
 
 DB_ERROR_STR = "DB error"
 app = Flask("payment-service")

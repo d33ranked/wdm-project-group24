@@ -1,11 +1,12 @@
 import os
 import asyncio
+import re
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from msgspec import msgpack
 
-from models import BatchItemRequest, PaymentRequest
-from saga_service.db import db
+from models import BatchItemRequest, OrderCheckoutStatus, PaymentRequest
+from saga_service.db import db, get_checkout_status, get_order_from_db
 
 kafka_producer: AIOKafkaProducer = None
 kafka_consumer: AIOKafkaConsumer = None
@@ -58,49 +59,51 @@ async def consume_loop():
         payload = message.value
         print(f"[ORDER] Received message on topic {topic} for order {order_id} with payload {payload}")
 
+        # !WARN Order ID is most likely 'checkout id' in most caseas
         if topic == os.environ['TOPIC_STOCK_RESPONSE_SUCCESS']:
-            current_checkout_status = db.get(f"checkout_status:{order_id}")
+            current_checkout_status = get_checkout_status(f"checkout_status:{order_id}")
             if current_checkout_status is None:
                 print(f"[ORDER] Received stock response for unknown order {order_id}, skipping")
                 continue
             
             print(f"[ORDER] Received stock response success for order {order_id}")
-            current_checkout_status['stock_success'] = True
-            db.set(f"checkout_status:{order_id}", current_checkout_status)
+            current_checkout_status.stock_success = True
+            db.set(f"checkout_status:{order_id}", msgpack.encode(current_checkout_status))
             _maybe_resolve_saga(order_id, current_checkout_status)
 
         elif topic == os.environ['TOPIC_PAYMENT_RESPONSE_SUCCESS']:
-            current_checkout_status = db.get(f"checkout_status:{order_id}")
+            current_checkout_status = get_checkout_status(f"checkout_status:{order_id}")
             if current_checkout_status is None:
                 print(f"[ORDER] Received payment response for unknown order {order_id}, skipping")
                 continue
             
             print(f"[ORDER] Received payment response success for order {order_id}")
-            current_checkout_status['payment_success'] = True
-            db.set(f"checkout_status:{order_id}", current_checkout_status)
+            current_checkout_status.payment_success = True
+            db.set(f"checkout_status:{order_id}", msgpack.encode(current_checkout_status))
             _maybe_resolve_saga(order_id, current_checkout_status)
 
         elif topic == os.environ['TOPIC_STOCK_RESPONSE_FAILURE']:
-            current_checkout_status = db.get(f"checkout_status:{order_id}")
+            current_checkout_status = get_checkout_status(f"checkout_status:{order_id}")
             if current_checkout_status is None:
                 print(f"[ORDER] Received stock failure for unknown order {order_id}, skipping")
                 continue
             
-            if current_checkout_status['payment_success']:
-                print(f"[ORDER] Stock failed for order {order_id} but payment succeeded, initiating compensation")
-                await _send_payment_rollback(PaymentRequest(user_id=payload['user_id'], amount=payload['amount']))
+            print(f"[ORDER] Stock failed for order {order_id}, reason was: {payload}, initiating compensation")
+            order_entry = get_order_from_db(current_checkout_status.order_id)
+            await _send_payment_rollback(PaymentRequest(user_id=order_entry.user_id, order_id=order_id, amount=current_checkout_status.total_cost))
 
             _fail_saga(order_id, "Stock reservation failed")
 
         elif topic == os.environ['TOPIC_PAYMENT_RESPONSE_FAILURE']:
-            current_checkout_status = db.get(f"checkout_status:{order_id}")
+            current_checkout_status = get_checkout_status(f"checkout_status:{order_id}")
             if current_checkout_status is None:
                 print(f"[ORDER] Received payment failure for unknown order {order_id}, skipping")
                 continue
             
-            if current_checkout_status['stock_success']:
-                print(f"[ORDER] Payment failed for order {order_id} but stock succeeded, initiating compensation")
-                await _send_stock_rollback(BatchItemRequest(order_id=order_id, items=payload['items']))
+            print(f"[ORDER] Payment failed for order {order_id}, initiating compensation")
+            order_entry = get_order_from_db(current_checkout_status.order_id)
+            checkout_stock_request = BatchItemRequest.from_order_value(order_id=order_id, order_value=order_entry)
+            await _send_stock_rollback(checkout_stock_request)
             
             _fail_saga(order_id, "Payment processing failed")
 
@@ -108,10 +111,10 @@ async def consume_loop():
             print(f"Received message on unknown topic: {topic}")
             continue
 
-def _maybe_resolve_saga(order_id: str, status: dict):
+def _maybe_resolve_saga(order_id: str, status: OrderCheckoutStatus):
     """Resolve the saga future with success once both stock and payment have succeeded."""
     print(f"Checking if saga for order {order_id} can be resolved with status {status}")
-    if status.get('stock_success') and status.get('payment_success'):
+    if status.stock_success and status.payment_success:
         db.delete(f"checkout_status:{order_id}")
         future = pending_sagas.pop(order_id, None)
         if future and not future.done():
@@ -122,7 +125,7 @@ def _fail_saga(order_id: str, reason: str):
     """Resolve the saga future with an exception (failure path)."""
     print(f"Failed saga for order {order_id} with reason: {reason}")
     future = pending_sagas.pop(order_id, None)
-    db.delete(f"checkout_status:{order_id}")
+    # db.delete(f"checkout_status:{order_id}")
 
     if future and not future.done():
         future.set_exception(Exception(reason))
@@ -141,6 +144,7 @@ async def _send_stock_request(request: BatchItemRequest) -> None:
         key=request.order_id,
         value=request,
     )
+    print(f"Send stock request for: {request.order_id}")
 
 async def _send_payment_rollback(request: PaymentRequest) -> None:
     await kafka_producer.send(

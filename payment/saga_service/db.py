@@ -3,8 +3,9 @@ from flask import abort
 import redis
 
 from msgspec import msgpack
-from order.app import DB_ERROR_STR
-from payment.models import UserValue
+from models import UserValue
+
+DB_ERROR_STR = "DB error"
 
 db: redis.Redis = redis.Redis(
     host=os.environ["REDIS_HOST"],

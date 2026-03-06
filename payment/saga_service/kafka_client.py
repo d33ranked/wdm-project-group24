@@ -72,7 +72,8 @@ async def consume_loop():
                     old_amount=user.credit,
                     new_amount=user.credit - payload['amount'],
                 )
-                db.update(payload['user_id'], -payload['amount'])
+                db.set(payload['user_id'], user.credit-payload['amount'])
+                db.set(f"handled: {order_id}", 0)
                 await _send_payment_success(response)
             else:
                 response = PaymentResponseFailure(
@@ -83,7 +84,10 @@ async def consume_loop():
                 )
                 await _send_payment_failure(response)
         
-        if topic == os.environ['TOPIC_PAYMENT_ROLLBACK']:
+        elif topic == os.environ['TOPIC_PAYMENT_ROLLBACK']:
+            if db.get(f"handled: {order_id}") is None:
+                print(f"Received a rollback request for order that was not processed: {order_id}")
+                continue
             user = get_user_from_db(payload['user_id'])
             assert user, f"rollback failed, because user: {payload['user_id']} does not exist"
             response = PaymentResponseSuccess(
@@ -93,8 +97,8 @@ async def consume_loop():
                 old_amount=user.credit,
                 new_amount=user.credit + payload['amount'],
             )
-            db.update(payload['user_id'], payload['amount'] + user.credit)
-            await _send_payment_success(response)
+            db.set(payload['user_id'], payload['amount'] + user.credit)
+            print(f"Rolled back payment for order: {order_id}")
 
         else:
             print(f"Received message on unknown topic: {topic}")

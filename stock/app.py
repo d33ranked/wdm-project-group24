@@ -12,9 +12,8 @@ from flask import Flask, jsonify, abort, Response, g
 
 from saga_service import kafka_client
 from models import StockValue
-from saga_service.db import db, wait_for_redis
+from saga_service.db import db, wait_for_redis, DB_ERROR_STR
 
-DB_ERROR_STR = "DB error"
 app = Flask("stock-service")
 
 

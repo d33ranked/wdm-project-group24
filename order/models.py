@@ -30,6 +30,8 @@ class PaymentRequest(Struct):
         return PaymentRequest(user_id=order_value.user_id, order_id=order_id, amount=order_value.total_cost)
 
 class OrderCheckoutStatus(Struct):
+    checkout_id: str
     order_id: str
+    total_cost: int
     payment_success: bool = False
     stock_success: bool = False

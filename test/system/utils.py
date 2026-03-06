@@ -70,7 +70,6 @@ def payment_pay(user_id: str, amount: int) -> int:
 
 def create_user() -> tuple[int, dict]:
     response = requests.post(f"{PAYMENT_URL}/payment/create_user")
-    print(f"Create user response: {response.status_code}, {response.text}")
     return response.status_code, (response.json() if status_code_is_success(response.status_code) else None)
 
 
@@ -93,7 +92,6 @@ def create_order(user_id: str) -> dict:
 
 def add_item_to_order(order_id: str, item_id: str, quantity: int) -> int:
     response = requests.post(f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}")
-    print(f"Add item to order response: {response.status_code}, {response.text}")
     return response.status_code
 
 

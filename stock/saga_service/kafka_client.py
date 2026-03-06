@@ -5,6 +5,7 @@ import redis
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from msgspec import msgpack
 
+from models import StockValue
 from saga_service.db import db
 
 kafka_producer: AIOKafkaProducer = None
@@ -54,10 +55,15 @@ async def consume_loop():
 
         print(f"[STOCK] Received message on topic {topic} for order {order_id} with payload {payload}")
         if topic == os.environ['TOPIC_STOCK_REQUEST']:
-            print(f"Received stock request for order {order_id}: {payload}")
+
+            if db.get(f"rolledback: {order_id}") is not None:
+                print(f"got a request for a order we already got rollback for: {order_id}, skipping")
+                db.set(f"handled: {order_id}", 0)
+                continue
 
             to_update = payload["items"]
-            keys = [item for (item, _) in to_update]
+            keys = [item['item_id'] for item in to_update]
+            original_state = {}
 
             try:
                 with db.pipeline() as pipe:
@@ -67,25 +73,38 @@ async def consume_loop():
 
                             # Read current stock values
                             stock_values = {}
-                            for (item, amount) in to_update:
+                            for item_to_update in to_update:
+                                item = item_to_update["item_id"]
+                                amount = item_to_update["quantity"]
                                 raw = pipe.get(item)  # Still in immediate mode after watch
                                 if raw is None:
                                     await _send_stock_failure(order_id, f"Item {item} not found")
                                     print(f"Item {item} not found for order {order_id}")
                                     pipe.reset()
                                     return
-                                stock = int(raw)
-                                if stock < amount:
+                                stock: StockValue = msgpack.decode(raw, type=StockValue)
+                                if stock.stock < amount:
                                     await _send_stock_failure(order_id, f"Not enough stock for item {item}")
                                     print(f"Not enough stock for item {item} in order {order_id}")
                                     pipe.reset()
                                     return
                                 stock_values[item] = stock
 
+                            print(f"Checked all stocks for order: {order_id}")
+
                             # Queue all updates atomically
                             pipe.multi()
-                            for (item, amount) in to_update:
-                                pipe.set(item, stock_values[item] - amount)
+                            for item_to_update in to_update:
+                                item = item_to_update["item_id"]
+                                original_state[item] = (stock_values[item].stock, item_to_update['quantity'], stock_values[item].stock-item_to_update['quantity'])
+                                stock_values[item].stock -= item_to_update["quantity"]
+                                pipe.set(item, msgpack.encode(stock_values[item]))
+
+                            if pipe.get(f"handled: {order_id}") is not None or pipe.get(f"rolledback: {order_id}") is not None:
+                                print(f"Cancelled transaction, because already rolledback or handled was set: {order_id}")
+                                pipe.reset()
+
+                            pipe.set(f"handled: {order_id}", 0)
                             pipe.execute()  # Fails if any watched key changed
                             break  # Success
 
@@ -93,18 +112,61 @@ async def consume_loop():
                             print(f"Race condition detected for order {order_id}, retrying...")
                             continue  # Retry the whole transaction
 
+                print(f"Stock request was successfull for order: {order_id}\nIn this transaction: ")
+                for item, (start, diff, end) in original_state.items():
+                    print(f"Item: {item}, was updated: start: {start}, minus: {diff}, end amount: {end}")
                 await _send_stock_success(order_id)
 
             except Exception as e:
+                print(f"Stock request failed for order: {order_id}, with reason: {str(e)}")
                 await _send_stock_failure(order_id, str(e))
 
-        if topic == os.environ['TOPIC_STOCK_ROLLBACK']:
-            print(f"Received stock rollback for order {order_id}: {payload}")
+        elif topic == os.environ['TOPIC_STOCK_ROLLBACK']:
+            if db.get(f"handled: {order_id}") is None or db.get(f"rolledback: {order_id}") is not None:
+                print(f"Received rollback for unhandled request, so no changes made, order: {order_id}")
+                db.set(f"rolledback: {order_id}", 0)
+                continue
+            
+            to_update = payload['items']
+            keys = [item['item_id'] for item in to_update]
+            original_state = {}
 
-            to_update = payload["items"]
-            async with db.transaction() as transaction:
-                for (item, amount) in to_update:
-                    await db.execute("UPDATE stock SET stock = stock + $1 WHERE id=$2", amount, item)
+            with db.pipeline() as pipe:
+                while True:
+                    try:
+                        pipe.watch(*keys)  # Watch all keys for changes
+
+                        # Read current stock values
+                        stock_values = {}
+                        for item_to_update in to_update:
+                            item = item_to_update["item_id"]
+                            amount = item_to_update["quantity"]
+                            raw = pipe.get(item)  # Still in immediate mode after watch
+                            if raw is None:
+                                print(f"FAILURE IN ROLLBACK: Item {item} not found for order {order_id}")
+                                pipe.reset()
+                                return
+
+                            stock = msgpack.decode(raw, type=StockValue)
+                            stock_values[item] = stock
+
+                        # Queue all updates atomically
+                        pipe.multi()
+                        for item_to_update in to_update:
+                            item = item_to_update["item_id"]
+                            original_state[item] = (stock_values[item].stock, item_to_update['quantity'], stock_values[item].stock+item_to_update['quantity'])
+                            stock_values[item].stock += item_to_update["quantity"]
+                            pipe.set(item, msgpack.encode(stock_values[item]))
+                        pipe.execute()  # Fails if any watched key changed
+                        break  # Success
+
+                    except redis.WatchError:
+                        print(f"Race condition detected for order {order_id}, retrying...")
+                        continue  # Retry the whole transaction
+            print(f"Rolled back for order: {order_id}")
+            for item, (start, diff, end) in original_state.items():
+                print(f"Item: {item}, was updated: start: {start}, plus: {diff}, end amount: {end}")
+
 
         else:
             print(f"Received message on unknown topic: {topic}")
