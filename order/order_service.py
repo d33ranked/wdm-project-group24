@@ -426,14 +426,12 @@ def handle_add_item(conn, path_params, _body, _headers) -> tuple[int, Any]:
         order_id = path_params[0]
         item_id  = path_params[1]
         quantity = int(path_params[2])
-        print(f"Handeling add item, with: order_id: {order_id}, item_id: {item_id}, quantity: {quantity}")
     except (IndexError, ValueError):
         return 400, {"error": "Expected /addItem/<order_id>/<item_id>/<quantity>"}
 
     # add_item requires item price — one synchronous internal call is acceptable
     # here since this is not on the checkout hot path and involves no saga state.
     stock_response = _fetch_item_price(item_id)
-    print(f"got stock respone: {stock_response}")
     if stock_response is None:
         return 503, {"error": "Stock service timeout fetching item price"}
     if stock_response.get("status_code") != 200:
