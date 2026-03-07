@@ -12,3 +12,23 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     body TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS sagas (
+    id TEXT PRIMARY KEY,                    -- transaction_id
+    order_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    items_quantities JSONB NOT NULL,        -- aggregated {item_id: qty}
+    original_correlation_id TEXT NOT NULL,  -- to reply to gateway when done
+    idempotency_key TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- For future saga logging — just the table definition, no logic yet
+CREATE TABLE IF NOT EXISTS saga_events (
+    id SERIAL PRIMARY KEY,
+    saga_id TEXT NOT NULL REFERENCES sagas(id),
+    event TEXT NOT NULL,
+    payload JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
