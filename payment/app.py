@@ -199,6 +199,8 @@ def handle_add_funds(conn, path_params, _body, headers) -> tuple[int, Any]:
 
     cached = check_idempotency(conn, idem_key)
     if cached:
+        # !WARN, since we have the 'new_credit' amount in cached body, this is stale info.
+        # !WARN, but the point is we don't execute again.
         return cached
 
     try:
@@ -208,7 +210,7 @@ def handle_add_funds(conn, path_params, _body, headers) -> tuple[int, Any]:
         return 400, {"error": "Expected /add_funds/<user_id>/<amount>"}
 
     if amount < 0:
-        return 400, {"error": "Adding negative funds is not allowed"}
+        return 400, {"error": "Adding negative funds is not allowed, use the pay endpoint"}
 
     try:
         new_credit = db_add_funds(conn, user_id, amount)
@@ -231,6 +233,8 @@ def handle_pay(conn, path_params, _body, headers) -> tuple[int, Any]:
 
     cached = check_idempotency(conn, idem_key)
     if cached:
+        # !WARN, since we have the 'new_credit' amount in cached body, this is stale info.
+        # !WARN, but the point is we don't execute again.
         return cached
 
     try:
