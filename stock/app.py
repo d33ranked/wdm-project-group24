@@ -124,6 +124,40 @@ def db_add_stock(conn, item_id: str, amount: int) -> int:
         return cur.fetchone()[0]
 
 
+def db_add_stock_batch(conn, items: list[tuple[str, int]]) -> dict[str, int]:
+    """
+    Adds stock for multiple items atomically.
+    items: list of (item_id, amount) pairs
+    Returns: dict of {item_id: new_stock}
+    Raises NotFoundError — caller must rollback on exception.
+    """
+    item_ids = [item_id for item_id, _ in items]
+
+    with conn.cursor() as cur:
+        # Lock all rows in a single query, ordered by id to prevent deadlocks
+        cur.execute(
+            "SELECT id, stock FROM items WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+            (item_ids,)
+        )
+        rows = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Validate all items before touching anything
+        for item_id, amount in items:
+            if item_id not in rows:
+                raise NotFoundError(f"Item {item_id} not found")
+
+        # All checks passed — execute all updates
+        results = {}
+        for item_id, amount in items:
+            cur.execute(
+                "UPDATE items SET stock = stock + %s WHERE id = %s RETURNING stock",
+                (amount, item_id),
+            )
+            results[item_id] = cur.fetchone()[0]
+
+    return results
+
+
 def db_subtract_stock(conn, item_id: str, amount: int) -> int:
     """Returns new stock level. Caller must commit/rollback."""
     with conn.cursor() as cur:
@@ -147,7 +181,6 @@ def db_subtract_stock_batch(conn, items: list[tuple[str, int]]) -> dict[str, int
     Raises NotFoundError or InsufficientStockError — caller must rollback on exception.
     """
     item_ids = [item_id for item_id, _ in items]
-    amounts  = {item_id: amount for item_id, amount in items}
 
     with conn.cursor() as cur:
         # Lock all rows in a single query, ordered by id to prevent deadlocks
@@ -283,6 +316,46 @@ def handle_add_stock(conn, path_params, _body, headers) -> tuple[int, Any]:
         raise
 
     return 200, body
+ 
+
+def handle_add_batch_stock(conn, _path_params, body, headers) -> tuple[int, Any]:
+    # path: /add_batch
+    # body: {"items": [{"item_id": "abc", "amount": 3}, ...]}
+    idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
+    cached = check_idempotency(conn, idem_key)
+    if cached:
+        # !WARN, since we have the 'new_stock' amount in cached body, this is stale info.
+        # !WARN, but the point is we don't execute again.
+        return cached
+
+    try:
+        raw_items = body["items"]
+        items: list[tuple[str, int]] = [
+            (entry["item_id"], int(entry["amount"]))
+            for entry in raw_items
+        ]
+    except (KeyError, TypeError, ValueError):
+        return 400, {"error": "Expected body: {\"items\": [{\"item_id\": str, \"amount\": int}, ...]}"}
+
+    if not items:
+        return 400, {"error": "Items list cannot be empty"}
+
+    if any(amount < 0 for _, amount in items):
+        return 400, {"error": "Adding negative stock is not allowed, use the substract endpoint"}
+
+    try:
+        results = db_add_stock_batch(conn, items)
+        response_body = {"updated_stock": results}
+        save_idempotency(conn, idem_key, 200, json.dumps(response_body))  # atomic with stock update
+        conn.commit()                                                     # single commit for both
+    except (NotFoundError, InsufficientStockError) as exc:
+        conn.rollback()
+        return 400, {"error": str(exc)}
+    except Exception:
+        conn.rollback()
+        raise
+
+    return 200, response_body
 
 
 def handle_subtract_stock(conn, path_params, _body, headers) -> tuple[int, Any]:
@@ -318,6 +391,45 @@ def handle_subtract_stock(conn, path_params, _body, headers) -> tuple[int, Any]:
     return 200, body
 
 
+def handle_subtract_batch_stock(conn, _path_params, body, headers) -> tuple[int, Any]:
+    # path: /subtract_batch
+    # body: {"items": [{"item_id": "abc", "amount": 3}, ...]}
+    idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
+    cached = check_idempotency(conn, idem_key)
+    if cached:
+        # !WARN, since we have the 'new_stock' amount in cached body, this is stale info.
+        # !WARN, but the point is we don't execute again.
+        return cached
+
+    try:
+        raw_items = body["items"]
+        items: list[tuple[str, int]] = [
+            (entry["item_id"], int(entry["amount"]))
+            for entry in raw_items
+        ]
+    except (KeyError, TypeError, ValueError):
+        return 400, {"error": "Expected body: {\"items\": [{\"item_id\": str, \"amount\": int}, ...]}"}
+
+    if not items:
+        return 400, {"error": "Items list cannot be empty"}
+
+    if any(amount < 0 for _, amount in items):
+        return 400, {"error": "Subtracting negative stock is not allowed, use the add endpoint"}
+
+    try:
+        results = db_subtract_stock_batch(conn, items)
+        response_body = {"updated_stock": results}
+        save_idempotency(conn, idem_key, 200, json.dumps(response_body))  # atomic with stock update
+        conn.commit()                                                     # single commit for both
+    except (NotFoundError, InsufficientStockError) as exc:
+        conn.rollback()
+        return 400, {"error": str(exc)}
+    except Exception:
+        conn.rollback()
+        raise
+
+    return 200, response_body
+
 # ---------------------------------------------------------------------------
 # Routing table
 # ---------------------------------------------------------------------------
@@ -327,7 +439,9 @@ ROUTES: list[tuple[str, str, callable]] = [
     ("POST", "/batch_init/",  handle_batch_init),
     ("GET",  "/find/",        handle_find_item),
     ("POST", "/add/",         handle_add_stock),
+    ("POST", "/add_batch/",   handle_add_batch_stock),
     ("POST", "/subtract/",    handle_subtract_stock),
+    ("POST", "/subtract_batch/", handle_subtract_batch_stock)
 ]
 
 
