@@ -174,6 +174,81 @@ def remove_credit(user_id: str, amount: int):
     return Response(body, status=200)
 
 
+@app.post("/prepare/<txn_id>/<user_id>/<amount>")
+def prepare_transaction(txn_id: str, user_id: str, amount: int):
+    amount = int(amount)
+    cur = g.conn.cursor()
+
+    # check if the transaction is already prepared
+    cur.execute("SELECT 1 FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+    if cur.fetchone() is not None:
+        cur.close()
+        return Response("Transaction already prepared", status=200)
+
+    # lock user row for update
+    cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+
+    # check if the user has enough credit
+    row = cur.fetchone()
+    if row is None:
+        cur.close()
+        abort(400, f"User: {user_id} not found!")
+
+    current_credit = row[0]
+    if current_credit < amount:
+        cur.close()
+        abort(400, f"User: {user_id} has insufficient credit!")
+
+    # deduct and record for possible rollback
+    cur.execute(
+        "UPDATE users SET credit = credit - %s WHERE id = %s", (amount, user_id)
+    )
+    cur.execute(
+        "INSERT INTO prepared_transactions (txn_id, user_id, amount) VALUES (%s, %s, %s)",
+        (txn_id, user_id, amount),
+    )
+    cur.close()
+    return Response("Transaction prepared", status=200)
+
+
+@app.post("/commit/<txn_id>")
+def commit_transaction(txn_id: str):
+    cur = g.conn.cursor()
+
+    # remove the rollback records
+    cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+    cur.close()
+    return Response("Transaction committed", status=200)
+
+
+@app.post("/abort/<txn_id>")
+def abort_transaction(txn_id: str):
+    cur = g.conn.cursor()
+
+    # fetch (only one) rollback record for this transaction
+    cur.execute(
+        "SELECT user_id, amount FROM prepared_transactions WHERE txn_id = %s", (txn_id,)
+    )
+    row = cur.fetchone()
+
+    if row is not None:
+        user_id, amount = row
+
+        # lock the user row for update
+        cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+
+        # add back the credit
+        if cur.fetchone() is not None:
+            cur.execute(
+                "UPDATE users SET credit = credit + %s WHERE id = %s", (amount, user_id)
+            )
+
+        # delete the rollback record
+        cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+    cur.close()
+    return Response("Transaction aborted", status=200)
+
+
 # generate advisory lock id from idempotency key
 def idempotency_token(key: str) -> int:
     return int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**31)
