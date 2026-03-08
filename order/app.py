@@ -31,8 +31,8 @@ def create_conn_pool(retries=10, delay=2):
     for attempt in range(retries):
         try:
             return psycopg2.pool.ThreadedConnectionPool(
-                minconn=2,
-                maxconn=10,
+                minconn=3,
+                maxconn=30,
                 host=os.environ["POSTGRES_HOST"],
                 port=int(os.environ["POSTGRES_PORT"]),
                 dbname=os.environ["POSTGRES_DB"],
@@ -367,7 +367,7 @@ def checkout_tpc(order_id: str):
 
     # prepare stock for each item
     prepared_stock = []
-    for item_id, qty in items_quantities.items():
+    for item_id, qty in sorted(items_quantities.items()):
         reply = send_post_request(
             f"{GATEWAY_URL}/stock/prepare/{txn_id}/{item_id}/{qty}",
             idempotency_key=f"{txn_id}:stock:prepare:{item_id}",
