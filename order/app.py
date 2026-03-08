@@ -6,8 +6,11 @@ import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from psycopg2.extensions import TRANSACTION_STATUS_IDLE
-from flask import Flask, jsonify, abort, Response
+from flask import Flask, jsonify, abort, Response, g
+from time import perf_counter
 import requests
+import random
+import json
 
 FLAG_2PC = os.environ.get('ENABLE_2PC', "false") == "true"
 FLAG_gRPC = os.environ.get('ENABLE_GRPC', "false") == "true"
@@ -29,8 +32,8 @@ app = Flask("order-service")
 # We use a ThreadedConnectionPool for better performance with Gunicorn
 try:
     db_pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=1,
-        maxconn=20,
+        minconn=10,
+        maxconn=200,
         host=os.environ['POSTGRES_HOST'],
         database=os.environ['POSTGRES_DB'],
         user=os.environ['POSTGRES_USER'],
@@ -50,6 +53,11 @@ def release_db_conn(conn):
 @atexit.register
 def close_db_pool():
     db_pool.closeall()
+
+@app.before_request
+def before_req():
+    g.start_time = perf_counter()
+    g.conn = db_pool.getconn()
 
 def init_db():
     conn = get_db_conn()
@@ -87,6 +95,55 @@ def send_request(method, url):
         abort(400, REQ_ERROR_STR)
 
 # --- ROUTES ---
+
+
+import uuid
+import random
+from flask import g, jsonify
+
+@app.post("/batch_init/<int:n>/<int:n_items>/<int:n_users>/<int:item_price>")
+def batch_init_orders(n, n_items, n_users, item_price):
+    try:
+        cur = g.conn.cursor()
+
+        for _ in range(n):
+            # 1. Generate a proper UUID
+            order_id = str(uuid.uuid4())
+            user_id = str(random.randint(0, n_users - 1))
+            total_cost = 2 * item_price
+            
+            # 2. Insert into 'orders' table
+            cur.execute(
+                """
+                INSERT INTO orders (order_id, user_id, paid, total_cost) 
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (order_id) DO NOTHING
+                """,
+                (order_id, user_id, False, total_cost)
+            )
+
+            # 3. Insert 2 random items into 'order_items' table
+            for _ in range(2):
+                item_id = str(random.randint(0, n_items - 1))
+                cur.execute(
+                    """
+                    INSERT INTO order_items (order_id, item_id, quantity) 
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (order_id, item_id) DO UPDATE 
+                    SET quantity = order_items.quantity + EXCLUDED.quantity
+                    """,
+                    (order_id, item_id, 1)
+                )
+
+        g.conn.commit()
+        cur.close()
+        return jsonify({"msg": f"Successfully initialized {n} orders"}), 200
+
+    except Exception as e:
+        if hasattr(g, 'conn'):
+            g.conn.rollback()
+        app.logger.error(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.post('/create/<user_id>')
 def create_order(user_id: str):
