@@ -27,8 +27,8 @@ services:
     image: order:latest
     environment:
       - GATEWAY_URL=http://gateway:80
-      - ENABLE_2PC=false
-      - ENABLE_GRPC=false
+      - ENABLE_2PC=true
+      - ENABLE_GRPC=true
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - ./env/order_postgres.env
@@ -48,7 +48,7 @@ services:
       context: .
       dockerfile: ./stock/Dockerfile
     image: stock:latest
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    command: /bin/sh -c "python grpc_server.py & gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app"
     env_file:
       - ./env/stock_postgres.env
     depends_on:
@@ -68,7 +68,7 @@ services:
       context: .
       dockerfile: ./payment/Dockerfile
     image: payment:latest
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    command: /bin/sh -c "python grpc_server.py & gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app"
     env_file:
       - ./env/payment_postgres.env
     depends_on:

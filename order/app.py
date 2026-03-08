@@ -5,6 +5,7 @@ import uuid
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 from flask import Flask, jsonify, abort, Response
 import requests
 
@@ -207,77 +208,117 @@ if FLAG_2PC:
         channel = grpc.insecure_channel(f"{service_name}:50051")
         return transaction_pb2_grpc.TransactionParticipantStub(channel)
 
+    def finalize_local_prepared(tx_id: str, commit: bool):
+        local_conn = get_db_conn()
+        try:
+            if local_conn.get_transaction_status() != TRANSACTION_STATUS_IDLE:
+                local_conn.rollback()
+            local_conn.autocommit = True
+            with local_conn.cursor() as cur:
+                if commit:
+                    cur.execute("COMMIT PREPARED %s", (tx_id,))
+                else:
+                    cur.execute("ROLLBACK PREPARED %s", (tx_id,))
+        finally:
+            try:
+                local_conn.autocommit = False
+            except Exception:
+                pass
+            release_db_conn(local_conn)
+
     @app.post('/2pc/checkout/<order_id>')
     def safe_checkout(order_id: str):
-        # 1. Fetch order details from local Postgres
         conn = get_db_conn()
+        tx_id = f"tx_{order_id}_{uuid.uuid4().hex}"
+        stubs = {
+            "stock": get_stub("stock-service"),
+            "payment": get_stub("payment-service"),
+        }
+        prepared_order = False
+        prepared_stock = False
+        prepared_payment = False
+
         try:
+            if conn.get_transaction_status() != TRANSACTION_STATUS_IDLE:
+                conn.rollback()
+
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM orders WHERE order_id = %s", (order_id,))
+                cur.execute("SELECT user_id, total_cost, paid FROM orders WHERE order_id = %s", (order_id,))
                 order = cur.fetchone()
                 if not order or order['paid']:
-                    return abort(400, "Invalid order or already paid")
+                    abort(400, "Invalid order or already paid")
 
                 cur.execute("SELECT item_id, quantity FROM order_items WHERE order_id = %s", (order_id,))
                 items = cur.fetchall()
-                
-            tx_id = f"tx_{order_id}"
-            
-            # 2. Prepare gRPC request
-            grpc_items = [transaction_pb2.OrderItem(item_id=i['item_id'], quantity=i['quantity']) for i in items]
+
+            grpc_items = [
+                transaction_pb2.OrderItem(item_id=item['item_id'], quantity=item['quantity'])
+                for item in items
+            ]
             prepare_req = transaction_pb2.PrepareRequest(
                 transaction_id=tx_id,
                 user_id=order['user_id'],
                 order_id=order_id,
                 total_cost=order['total_cost'],
-                items=grpc_items
+                items=grpc_items,
             )
 
-            # 3. PHASE 1: PREPARE (External Participants + Local)
-            stubs = {
-                "stock": get_stub("stock-service"),
-                "payment": get_stub("payment-service")
-            }
+            stock_prepare = stubs["stock"].Prepare(prepare_req)
+            prepared_stock = stock_prepare.success
+            if not prepared_stock:
+                raise Exception(stock_prepare.message or "Stock prepare failed")
 
-            # Step A: Prepare Stock and Payment
-            success_stock = stubs["stock"].Prepare(prepare_req).success
-            success_payment = stubs["payment"].Prepare(prepare_req).success
-            
-            # Step B: Prepare Local (Order)
-            success_order = False
+            payment_prepare = stubs["payment"].Prepare(prepare_req)
+            prepared_payment = payment_prepare.success
+            if not prepared_payment:
+                raise Exception(payment_prepare.message or "Payment prepare failed")
+
             with conn.cursor() as cur:
                 cur.execute("UPDATE orders SET paid = TRUE WHERE order_id = %s", (order_id,))
-                cur.execute(f"PREPARE TRANSACTION '{tx_id}'")
-                success_order = True
-            conn.commit()
+                cur.execute("PREPARE TRANSACTION %s", (tx_id,))
+            prepared_order = True
 
-            # 4. PHASE 2: GLOBAL DECISION
-            if success_stock and success_payment and success_order:
-                # COMMIT ALL
-                stubs["stock"].Commit(transaction_pb2.CommitRequest(transaction_id=tx_id))
-                stubs["payment"].Commit(transaction_pb2.CommitRequest(transaction_id=tx_id))
-                with conn.cursor() as cur:
-                    cur.execute(f"COMMIT PREPARED '{tx_id}'")
-                conn.commit()
-                return Response("Checkout Successful", status=200)
+            stubs["stock"].Commit(transaction_pb2.CommitRequest(transaction_id=tx_id))
+            stubs["payment"].Commit(transaction_pb2.CommitRequest(transaction_id=tx_id))
+            finalize_local_prepared(tx_id, commit=True)
+
+            return Response("Checkout successful", status=200)
+
+        except Exception as exc:
+            if prepared_stock:
+                try:
+                    stubs["stock"].Rollback(transaction_pb2.RollbackRequest(transaction_id=tx_id))
+                except Exception:
+                    pass
+
+            if prepared_payment:
+                try:
+                    stubs["payment"].Rollback(transaction_pb2.RollbackRequest(transaction_id=tx_id))
+                except Exception:
+                    pass
+
+            if prepared_order:
+                try:
+                    finalize_local_prepared(tx_id, commit=False)
+                except Exception:
+                    pass
             else:
-                # ROLLBACK ALL
-                raise Exception("Prepare phase failed")
+                try:
+                    if conn.get_transaction_status() != TRANSACTION_STATUS_IDLE:
+                        conn.rollback()
+                except Exception:
+                    pass
 
-        except Exception as e:
-            # Global Rollback
-            stubs["stock"].Rollback(transaction_pb2.RollbackRequest(transaction_id=tx_id))
-            stubs["payment"].Rollback(transaction_pb2.RollbackRequest(transaction_id=tx_id))
-            with conn.cursor() as cur:
-                cur.execute(f"ROLLBACK PREPARED '{tx_id}'")
-            conn.commit()
-            return abort(400, f"Checkout failed: {str(e)}")
+            abort(400, f"Checkout failed: {str(exc)}")
         finally:
             release_db_conn(conn)
 
 
 
 
-
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
+
+
+
+
