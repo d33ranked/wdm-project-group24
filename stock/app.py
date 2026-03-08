@@ -3,20 +3,18 @@ import uuid
 from flask import Flask, jsonify, abort, Response
 from psycopg2.extras import RealDictCursor
 from database import get_db_conn, release_db_conn  # Shared DB logic
-=======
+
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
 from flask import Flask, jsonify, abort, Response, g
 from time import perf_counter
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
+
 
 DB_ERROR_STR = "DB error"
 
 app = Flask("stock-service")
 
-<<<<<<< HEAD
-=======
 # --- DATABASE SETUP ---
 try:
     db_pool = psycopg2.pool.ThreadedConnectionPool(
@@ -52,7 +50,6 @@ def release_db_conn(conn):
 def close_db_pool():
     db_pool.closeall()
 
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
 def init_db():
     conn = get_db_conn()
     try:
@@ -65,15 +62,12 @@ def init_db():
                 );
             """)
         conn.commit()
-<<<<<<< HEAD
-=======
     except psycopg2.errors.UniqueViolation:
         # Table already exists (race condition with other workers), ignore
         conn.rollback()
     except Exception as e:
         conn.rollback()
         app.logger.warning(f"init_db error (may be harmless): {e}")
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
     finally:
         release_db_conn(conn)
 

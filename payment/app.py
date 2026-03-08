@@ -1,22 +1,12 @@
 import uuid
-<<<<<<< HEAD
 from flask import Flask, jsonify, abort, Response
-from psycopg2.extras import RealDictCursor
-from database import get_db_conn, release_db_conn # Import shared logic
-=======
-import psycopg2
-from psycopg2 import pool
 from psycopg2.extras import RealDictCursor, execute_values
-from flask import Flask, jsonify, abort, Response, g
-from time import perf_counter
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
+from database import get_db_conn, release_db_conn # Import shared logic
 
 DB_ERROR_STR = "DB error"
 
 app = Flask("payment-service")
 
-<<<<<<< HEAD
-=======
 # --- DATABASE SETUP ---
 try:
     db_pool = psycopg2.pool.ThreadedConnectionPool(
@@ -52,7 +42,6 @@ def release_db_conn(conn):
 def close_db_pool():
     db_pool.closeall()
 
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
 def init_db():
     conn = get_db_conn()
     try:
@@ -64,15 +53,12 @@ def init_db():
                 );
             """)
         conn.commit()
-<<<<<<< HEAD
-=======
     except psycopg2.errors.UniqueViolation:
         # Table already exists (race condition with other workers), ignore
         conn.rollback()
     except Exception as e:
         conn.rollback()
         app.logger.warning(f"init_db error (may be harmless): {e}")
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
     finally:
         release_db_conn(conn)
 
@@ -102,12 +88,6 @@ def batch_init_users(n: int, starting_money: int):
     try:
         with conn.cursor() as cur:
             data = [(str(i), int(starting_money)) for i in range(int(n))]
-<<<<<<< HEAD
-            cur.executemany("""
-                INSERT INTO users (user_id, credit) VALUES (%s, %s) 
-                ON CONFLICT (user_id) DO UPDATE SET credit = EXCLUDED.credit
-            """, data)
-=======
             # Use execute_values for much faster bulk insert
             execute_values(
                 cur,
@@ -115,7 +95,6 @@ def batch_init_users(n: int, starting_money: int):
                 data,
                 page_size=10000
             )
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
         conn.commit()
         return jsonify({"msg": "Batch init for users successful"})
     except Exception as e:

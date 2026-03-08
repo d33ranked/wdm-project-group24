@@ -20,8 +20,7 @@ COPY ./stock/ .
 CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]
 
 EXPOSE 5000
-<<<<<<< HEAD
-=======
+
 
 ENV PYTHONUNBUFFERED=1
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
+

@@ -136,7 +136,7 @@ services:
     expose:
       - "50051"
 
-=======
+
   kafka:
     image: apache/kafka:latest
     ports:
@@ -177,4 +177,4 @@ services:
 
 volumes:
   kafka_data:
->>>>>>> 61f1153c7cc4a78e648c1dbe9fba1f15d59f01c3
+
