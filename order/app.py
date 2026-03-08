@@ -328,10 +328,20 @@ def checkout_tpc(order_id: str):
         abort(400, f"Order: {order_id} not found!")
     paid, items, user_id, total_cost = row
 
+    # return if order is already paid
+    if paid:
+        cur.close()
+        abort(400, "Order is already paid for!")
+
     # aggregate each item quantity
     items_quantities = defaultdict(int)
     for item_id, qty in items:
         items_quantities[item_id] += qty
+
+    # return if the order has no items
+    if not items_quantities:
+        cur.close()
+        abort(400, "Order has no items!")
 
     # create transaction log record for this transaction
     cur.execute(
