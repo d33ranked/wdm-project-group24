@@ -459,6 +459,87 @@ def checkout_tpc(order_id: str):
     return Response("Checkout successful", status=200)
 
 
+def recovery_tpc():
+    conn = conn_pool.getconn()
+
+    # on startup, check for incomplete transactions
+    try:
+        cur = conn.cursor()
+
+        # get all incomplete transactions
+        cur.execute(
+            "SELECT txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost FROM transaction_log WHERE status NOT IN ('committed', 'aborted')"
+        )
+        rows = cur.fetchall()
+
+        # return if none found
+        if not rows:
+            cur.close()
+            app.logger.info("RECOVERY: No incomplete transactions found")
+            return
+
+        # process each incomplete transaction
+        for (
+            txn_id,
+            order_id,
+            status,
+            prepared_stock,
+            prepared_payment,
+            user_id,
+            total_cost,
+        ) in rows:
+            app.logger.warning(
+                f"RECOVERY: Found incomplete transaction txn={txn_id}, status={status}"
+            )
+
+            # handle uncommitted transactions - safe to abort
+            if status in ("started", "preparing_stock", "preparing_payment"):
+                # have not committed so safe to abort
+                abort_tpc(txn_id, prepared_stock, prepared_payment)
+                cur.execute(
+                    "UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s",
+                    (txn_id,),
+                )
+                conn.commit()
+
+            # handle committed transactions - need to commit
+            elif status == "committing":
+                # decision was COMMIT, but not all participants got the message
+                # resume sending the commits
+                commit_tpc(txn_id, prepared_stock, prepared_payment)
+                cur.execute("UPDATE orders SET paid = TRUE WHERE id = %s", (order_id,))
+                cur.execute(
+                    "UPDATE transaction_log SET status = 'committed' WHERE txn_id = %s",
+                    (txn_id,),
+                )
+                conn.commit()
+            # handle aborted transactions - need to abort
+            elif status == "aborting":
+                # was aborting, but crashed in flight
+                # resume sending the aborts
+                abort_tpc(txn_id, prepared_stock, prepared_payment)
+                cur.execute(
+                    "UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s",
+                    (txn_id,),
+                )
+                conn.commit()
+            # handle unknown transactions - log warning
+            else:
+                app.logger.warning(
+                    f"RECOVERY: Found unknown transaction status txn={txn_id}, status={status}"
+                )
+        cur.close()
+    # close connection and return
+    finally:
+        conn_pool.putconn(conn)
+
+
+with app.app_context():
+    try:
+        recovery_tpc()
+    except Exception as e:
+        app.logger.warning(f"RECOVERY: Error during recovery: {e}")
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
