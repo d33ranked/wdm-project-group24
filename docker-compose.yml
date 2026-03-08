@@ -27,13 +27,16 @@ services:
     image: order:latest
     environment:
       - GATEWAY_URL=http://gateway:80
-      - ENABLE_2PC=false
+      - ENABLE_2PC=true
       - ENABLE_GRPC=false
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - ./env/order_postgres.env
     depends_on:
       - order-db
+      - stock-grpc  
+      - payment-grpc 
+
 
   stock-db:
     image: postgres:17-bookworm
@@ -53,6 +56,18 @@ services:
       - ./env/stock_postgres.env
     depends_on:
       - stock-db
+
+  stock-grpc:
+    build:
+      context: . 
+      dockerfile: ./stock/Dockerfile
+    command: python grpc_server.py
+    env_file:
+      - ./env/stock_postgres.env
+    depends_on:
+      - stock-db
+    expose:
+      - "50052"
 
   # --- PAYMENT MICROSERVICE ---
   payment-db:
@@ -74,8 +89,15 @@ services:
     depends_on:
       - payment-db
 
+  payment-grpc:
+    build:
+      context: .  
+      dockerfile: ./payment/Dockerfile
+    command: python grpc_server.py
+    env_file:
+      - ./env/payment_postgres.env
+    depends_on:
+      - stock-db
+    expose:
+      - "50051"
 
-volumes:
-  order_data:
-  stock_data:
-  payment_data:

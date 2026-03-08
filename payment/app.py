@@ -1,52 +1,25 @@
-import logging
-import os
-import atexit
 import uuid
-import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, abort, Response
+from psycopg2.extras import RealDictCursor
+from database import get_db_conn, release_db_conn # Import shared logic
 
 DB_ERROR_STR = "DB error"
 
 app = Flask("payment-service")
 
-# --- DATABASE SETUP ---
-try:
-    db_pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=1,
-        maxconn=20,
-        host=os.environ['POSTGRES_HOST'],
-        database=os.environ['POSTGRES_DB'],
-        user=os.environ['POSTGRES_USER'],
-        password=os.environ['POSTGRES_PASSWORD'],
-        port=os.environ.get('POSTGRES_PORT', 5432)
-    )
-except Exception as e:
-    app.logger.error(f"Failed to connect to Postgres: {e}")
-    exit(1)
-
-def get_db_conn():
-    return db_pool.getconn()
-
-def release_db_conn(conn):
-    db_pool.putconn(conn)
-
-@atexit.register
-def close_db_pool():
-    db_pool.closeall()
-
 def init_db():
     conn = get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
-                credit BIGINT NOT NULL DEFAULT 0
-            );
-        """)
-    conn.commit()
-    release_db_conn(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    credit BIGINT NOT NULL DEFAULT 0
+                );
+            """)
+        conn.commit()
+    finally:
+        release_db_conn(conn)
 
 with app.app_context():
     init_db()
@@ -72,11 +45,12 @@ def create_user():
 def batch_init_users(n: int, starting_money: int):
     conn = get_db_conn()
     try:
-        # Using execute_values or a manual loop for bulk insert
         with conn.cursor() as cur:
             data = [(str(i), int(starting_money)) for i in range(int(n))]
-            # Efficient bulk insert
-            cur.executemany("INSERT INTO users (user_id, credit) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET credit = EXCLUDED.credit", data)
+            cur.executemany("""
+                INSERT INTO users (user_id, credit) VALUES (%s, %s) 
+                ON CONFLICT (user_id) DO UPDATE SET credit = EXCLUDED.credit
+            """, data)
         conn.commit()
         return jsonify({"msg": "Batch init for users successful"})
     except Exception:
@@ -124,14 +98,13 @@ def remove_credit(user_id: str, amount: int):
     conn = get_db_conn()
     try:
         with conn.cursor() as cur:
-            # Atomic check-and-update
+            # Atomic check-and-update to prevent negative balance
             cur.execute(
                 "UPDATE users SET credit = credit - %s WHERE user_id = %s AND credit >= %s RETURNING credit",
                 (amount, user_id, amount)
             )
             result = cur.fetchone()
             if not result:
-                # Either user doesn't exist or credit is insufficient
                 cur.execute("SELECT credit FROM users WHERE user_id = %s", (user_id,))
                 user_exists = cur.fetchone()
                 if not user_exists:
@@ -142,7 +115,7 @@ def remove_credit(user_id: str, amount: int):
         return Response(f"User: {user_id} credit updated to: {result[0]}", status=200)
     except Exception as e:
         conn.rollback()
-        if hasattr(e, 'code'): raise e # Re-raise Flask aborts
+        if hasattr(e, 'code'): raise e 
         abort(400, DB_ERROR_STR)
     finally:
         release_db_conn(conn)

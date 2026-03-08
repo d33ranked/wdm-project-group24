@@ -25,7 +25,7 @@ message PrepareRequest {
   string transaction_id = 1;
   string user_id = 2;
   string order_id = 3;
-  int32 total_cost = 4;
+  float total_cost = 4;
   repeated OrderItem items = 5;
 }
 

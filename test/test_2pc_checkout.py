@@ -142,6 +142,43 @@ class TestMicroservices(unittest.TestCase):
         credit: int = tu.find_user(user_id)['credit']
         self.assertEqual(credit, 5)
 
+    def test_prepared_rollback_scenario(self):
+        # 1. Setup: User has plenty of credit
+        user = tu.create_user()
+        user_id = user['user_id']
+        tu.add_credit_to_user(user_id, 1000)
+
+        # 2. Setup: Order contains one valid item and one NON-EXISTENT item
+        order = tu.create_order(user_id)
+        order_id = order['order_id']
+        
+        # Item A exists
+        item_valid = tu.create_item(10)
+        tu.add_stock(item_valid['item_id'], 50)
+        tu.add_item_to_order(order_id, item_valid['item_id'], 1)
+        
+        # Item B DOES NOT exist in stock-db (we just use a fake UUID)
+        fake_item_id = "00000000-0000-0000-0000-000000000000"
+        tu.add_item_to_order(order_id, fake_item_id, 1)
+
+        # 3. Action: Trigger Checkout
+        # Logic: 
+        # - Payment-gRPC will successfully PREPARE (User has 1000 credit).
+        # - Stock-gRPC will FAIL Prepare (Item B not found).
+        # - Order Service will collect [True, False] and must call Rollback on both.
+        response = tu.safe_checkout_order(order_id)
+        self.assertTrue(tu.status_code_is_failure(response.status_code))
+
+        # 4. Verification: The "Atomic" Check
+        # Even though Payment-gRPC successfully 'Prepared', it should have been rolled back.
+        # User credit should still be 1000, NOT 1000 - 10.
+        final_credit = tu.find_user(user_id)['credit']
+        self.assertEqual(final_credit, 1000, "Payment was not rolled back after partial Prepare!")
+        
+        # Item A stock should still be 50
+        final_stock = tu.find_item(item_valid['item_id'])['stock']
+        self.assertEqual(final_stock, 50, "Stock was not rolled back after partial Prepare!")
+
 
 if __name__ == '__main__':
     unittest.main()

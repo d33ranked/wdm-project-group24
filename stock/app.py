@@ -1,53 +1,27 @@
-import logging
 import os
-import atexit
 import uuid
-import psycopg2
-from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, abort, Response
+from psycopg2.extras import RealDictCursor
+from database import get_db_conn, release_db_conn  # Shared DB logic
 
 DB_ERROR_STR = "DB error"
 
 app = Flask("stock-service")
 
-# --- DATABASE SETUP ---
-try:
-    db_pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=1,
-        maxconn=20,
-        host=os.environ['POSTGRES_HOST'],
-        database=os.environ['POSTGRES_DB'],
-        user=os.environ['POSTGRES_USER'],
-        password=os.environ['POSTGRES_PASSWORD'],
-        port=os.environ.get('POSTGRES_PORT', 5432)
-    )
-except Exception as e:
-    app.logger.error(f"Failed to connect to Postgres: {e}")
-    exit(1)
-
-def get_db_conn():
-    return db_pool.getconn()
-
-def release_db_conn(conn):
-    db_pool.putconn(conn)
-
-@atexit.register
-def close_db_pool():
-    db_pool.closeall()
-
 def init_db():
     conn = get_db_conn()
-    with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS stock (
-                item_id TEXT PRIMARY KEY,
-                stock_count INTEGER NOT NULL DEFAULT 0,
-                price INTEGER NOT NULL DEFAULT 0
-            );
-        """)
-    conn.commit()
-    release_db_conn(conn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS stock (
+                    item_id TEXT PRIMARY KEY,
+                    stock_count INTEGER NOT NULL DEFAULT 0,
+                    price INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+        conn.commit()
+    finally:
+        release_db_conn(conn)
 
 with app.app_context():
     init_db()
@@ -130,7 +104,6 @@ def remove_stock(item_id: str, amount: int):
     conn = get_db_conn()
     try:
         with conn.cursor() as cur:
-            # Atomic check-and-update to prevent negative stock
             cur.execute(
                 "UPDATE stock SET stock_count = stock_count - %s "
                 "WHERE item_id = %s AND stock_count >= %s RETURNING stock_count",
@@ -138,7 +111,6 @@ def remove_stock(item_id: str, amount: int):
             )
             result = cur.fetchone()
             if not result:
-                # Check if item exists to give better error msg
                 cur.execute("SELECT stock_count FROM stock WHERE item_id = %s", (item_id,))
                 exists = cur.fetchone()
                 if not exists:
