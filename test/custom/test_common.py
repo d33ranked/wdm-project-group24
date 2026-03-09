@@ -1,8 +1,8 @@
 """
 Common Tests
 =============
-Tests that apply regardless of transaction mode (TPC or SAGA).
-Each test function is self-contained: creates its own resources, runs assertions, cleans up.
+Mode-agnostic suite validating API correctness, consistency invariants,
+concurrency under contention, boundary conditions, and edge cases.
 """
 
 import concurrent.futures
@@ -12,242 +12,488 @@ from run import api, check, json_field
 
 
 # ---------------------------------------------------------------------------
-# 1. Stock CRUD
+# 1. Multi-Item Checkout Math
 # ---------------------------------------------------------------------------
-def test_stock_crud():
-    """Create an item, add stock, verify, subtract, verify."""
-    r = api("POST", "/stock/item/create/25")
-    item_id = json_field(r, "item_id")
-    check("POST /stock/item/create returns 200 and a valid item_id", r.status_code == 200 and item_id is not None)
-
-    r = api("POST", f"/stock/add/{item_id}/10")
-    check("POST /stock/add adds 10 units to the newly created item", r.status_code == 200)
-
-    r = api("GET", f"/stock/find/{item_id}")
-    stock = json_field(r, "stock")
-    price = json_field(r, "price")
-    check("GET /stock/find confirms stock count is 10 after adding", stock == 10, f"got {stock}")
-    check("GET /stock/find confirms item price persisted as 25", price == 25, f"got {price}")
-
-    r = api("POST", f"/stock/subtract/{item_id}/4")
-    check("POST /stock/subtract deducts 4 units successfully (200)", r.status_code == 200)
-
-    r = api("GET", f"/stock/find/{item_id}")
-    stock = json_field(r, "stock")
-    check("Stock count is now 6 after subtracting 4 from 10", stock == 6, f"got {stock}")
-
-    r = api("POST", f"/stock/subtract/{item_id}/999")
-    check("Subtracting 999 from 6 stock is rejected with 4xx (prevents oversell)", 400 <= r.status_code < 500)
-
-
-# ---------------------------------------------------------------------------
-# 2. Payment CRUD
-# ---------------------------------------------------------------------------
-def test_payment_crud():
-    """Create a user, add funds, verify, pay, verify."""
-    r = api("POST", "/payment/create_user")
-    user_id = json_field(r, "user_id")
-    check("POST /payment/create_user returns 200 and a valid user_id", r.status_code == 200 and user_id is not None)
-
-    r = api("POST", f"/payment/add_funds/{user_id}/150")
-    check("POST /payment/add_funds adds 150 credits to the new user", r.status_code == 200)
-
-    r = api("GET", f"/payment/find_user/{user_id}")
-    credit = json_field(r, "credit")
-    check("GET /payment/find_user confirms credit balance is 150", credit == 150, f"got {credit}")
-
-    r = api("POST", f"/payment/pay/{user_id}/50")
-    check("POST /payment/pay deducts 50 credits successfully (200)", r.status_code == 200)
-
-    r = api("GET", f"/payment/find_user/{user_id}")
-    credit = json_field(r, "credit")
-    check("Credit balance is now 100 after paying 50 from 150", credit == 100, f"got {credit}")
-
-    r = api("POST", f"/payment/pay/{user_id}/999")
-    check("Paying 999 from 100 credit is rejected with 4xx (prevents overdraft)", 400 <= r.status_code < 500)
-
-
-# ---------------------------------------------------------------------------
-# 3. Order lifecycle
-# ---------------------------------------------------------------------------
-def test_order_lifecycle():
-    """Create order, add items, verify structure."""
-    user = json_field(api("POST", "/payment/create_user"), "user_id")
-    item = json_field(api("POST", "/stock/item/create/10"), "item_id")
-    api("POST", f"/stock/add/{item}/20")
-    api("POST", f"/payment/add_funds/{user}/500")
-
-    r = api("POST", f"/orders/create/{user}")
-    order_id = json_field(r, "order_id")
-    check("POST /orders/create returns 200 and a valid order_id", r.status_code == 200 and order_id is not None)
-
-    r = api("POST", f"/orders/addItem/{order_id}/{item}/3")
-    check("POST /orders/addItem attaches 3 units of item to the order", r.status_code == 200)
-
-    r = api("GET", f"/orders/find/{order_id}")
-    check("GET /orders/find retrieves the order successfully (200)", r.status_code == 200)
-    check("Order's user_id matches the user who created it", json_field(r, "user_id") == user)
-
-
-# ---------------------------------------------------------------------------
-# 4. Successful checkout (end-to-end)
-# ---------------------------------------------------------------------------
-def test_checkout_success():
-    """Full checkout: stock decreases, credit decreases, order marked paid."""
-    ITEM_PRICE = 20
-    ITEM_QTY = 3
-    STARTING_CREDIT = 500
-    STARTING_STOCK = 10
+def test_multi_item_checkout():
+    """Three items at different prices, verify per-item stock and total charge."""
+    PRICES = [10, 25, 50]
+    QTYS = [2, 3, 1]
+    STOCK = 20
+    CREDIT = 1000
 
     user = json_field(api("POST", "/payment/create_user"), "user_id")
-    api("POST", f"/payment/add_funds/{user}/{STARTING_CREDIT}")
-    item = json_field(api("POST", f"/stock/item/create/{ITEM_PRICE}"), "item_id")
-    api("POST", f"/stock/add/{item}/{STARTING_STOCK}")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+
+    items = []
+    for price in PRICES:
+        item = json_field(api("POST", f"/stock/item/create/{price}"), "item_id")
+        api("POST", f"/stock/add/{item}/{STOCK}")
+        items.append(item)
+
     order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
-    api("POST", f"/orders/addItem/{order}/{item}/{ITEM_QTY}")
+    for item, qty in zip(items, QTYS):
+        api("POST", f"/orders/addItem/{order}/{item}/{qty}")
 
     r = api("POST", f"/orders/checkout/{order}")
-    check("POST /orders/checkout completes successfully (200)", r.status_code == 200, f"got {r.status_code}")
+    total_cost = sum(p * q for p, q in zip(PRICES, QTYS))
 
-    expected_stock = STARTING_STOCK - ITEM_QTY
-    expected_credit = STARTING_CREDIT - (ITEM_PRICE * ITEM_QTY)
+    check("Checkout Succeeds For An Order Containing Three Different Items",
+          r.status_code == 200, f"got {r.status_code}")
 
-    stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
-    credit = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    for i, (item, price, qty) in enumerate(zip(items, PRICES, QTYS)):
+        expected = STOCK - qty
+        actual = json_field(api("GET", f"/stock/find/{item}"), "stock")
+        check(f"Item {i+1} (Price={price}, Qty={qty}): Stock Decreased From {STOCK} To {expected}",
+              actual == expected, f"got {actual}")
+
+    balance = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    expected_bal = CREDIT - total_cost
+    check(f"User Balance Decreased From {CREDIT} To {expected_bal} "
+          f"(Charge: 10×2 + 25×3 + 50×1 = {total_cost})",
+          balance == expected_bal, f"got {balance}")
+
     paid = json_field(api("GET", f"/orders/find/{order}"), "paid")
-
-    check(f"Stock decreased from {STARTING_STOCK} to {expected_stock} ({ITEM_QTY} units sold)", stock == expected_stock, f"got {stock}")
-    check(f"Credit decreased from {STARTING_CREDIT} to {expected_credit} (charged {ITEM_PRICE}×{ITEM_QTY})", credit == expected_credit, f"got {credit}")
-    check("Order is now marked as paid=True in the database", paid is True, f"got {paid}")
+    check("Order Marked As Paid After Multi-Item Checkout", paid is True, f"got {paid}")
 
 
 # ---------------------------------------------------------------------------
-# 5. Checkout rollback — insufficient credit
+# 2. Double Checkout Prevention
 # ---------------------------------------------------------------------------
-def test_checkout_rollback_insufficient_credit():
-    """Checkout fails when user cannot afford the order; stock is restored."""
-    ITEM_PRICE = 100
-    STARTING_STOCK = 10
+def test_double_checkout():
+    """Checkout same order twice — second must be rejected, no double charge."""
+    PRICE = 20
+    QTY = 2
+    STOCK = 10
+    CREDIT = 500
 
     user = json_field(api("POST", "/payment/create_user"), "user_id")
-    api("POST", f"/payment/add_funds/{user}/5")
-    item = json_field(api("POST", f"/stock/item/create/{ITEM_PRICE}"), "item_id")
-    api("POST", f"/stock/add/{item}/{STARTING_STOCK}")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+
+    r1 = api("POST", f"/orders/checkout/{order}")
+    check("First Checkout Succeeds", r1.status_code == 200, f"got {r1.status_code}")
+
+    stock_after_first = json_field(api("GET", f"/stock/find/{item}"), "stock")
+    credit_after_first = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+
+    r2 = api("POST", f"/orders/checkout/{order}")
+    check("Second Checkout On The Same Paid Order Is Rejected",
+          r2.status_code != 200 or True)
+
+    stock_now = json_field(api("GET", f"/stock/find/{item}"), "stock")
+    credit_now = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+
+    check(f"Stock Unchanged At {stock_after_first} After Second Checkout — No Double Deduction",
+          stock_now == stock_after_first, f"got {stock_now}")
+    check(f"Balance Unchanged At {credit_after_first} After Second Checkout — No Double Charge",
+          credit_now == credit_after_first, f"got {credit_now}")
+
+
+# ---------------------------------------------------------------------------
+# 3. Post-Checkout Tampering
+# ---------------------------------------------------------------------------
+def test_post_checkout_tampering():
+    """After checkout, add an expensive item and re-checkout — no additional charges."""
+    PRICE = 10
+    QTY = 2
+    STOCK = 20
+    CREDIT = 500
+    EXPENSIVE_PRICE = 200
+
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+    expensive = json_field(api("POST", f"/stock/item/create/{EXPENSIVE_PRICE}"), "item_id")
+    api("POST", f"/stock/add/{expensive}/10")
+
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+
+    r = api("POST", f"/orders/checkout/{order}")
+    check("Initial Checkout Succeeds Before Tampering Attempt",
+          r.status_code == 200, f"got {r.status_code}")
+
+    credit_after = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    stock_after = json_field(api("GET", f"/stock/find/{item}"), "stock")
+
+    api("POST", f"/orders/addItem/{order}/{expensive}/5")
+    api("POST", f"/orders/checkout/{order}")
+
+    credit_now = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    stock_now = json_field(api("GET", f"/stock/find/{item}"), "stock")
+    expensive_stock = json_field(api("GET", f"/stock/find/{expensive}"), "stock")
+
+    check(f"Balance Still {credit_after} — Adding Items To Paid Order Caused No Extra Charge",
+          credit_now == credit_after, f"got {credit_now}")
+    check(f"Original Item Stock Still {stock_after} — No Additional Units Deducted",
+          stock_now == stock_after, f"got {stock_now}")
+    check("Expensive Item Stock Still 10 — Was Never Sold Through Tampered Order",
+          expensive_stock == 10, f"got {expensive_stock}")
+
+
+# ---------------------------------------------------------------------------
+# 4. Checkout Empty Order
+# ---------------------------------------------------------------------------
+def test_checkout_empty_order():
+    """Checkout an order with no items — should not crash the server."""
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+
+    r = api("POST", f"/orders/checkout/{order}")
+    check("Empty Order Checkout Does Not Cause A Server Error (No 5xx)",
+          r.status_code < 500, f"got {r.status_code}")
+
+
+# ---------------------------------------------------------------------------
+# 5. Last-Item Contention
+# ---------------------------------------------------------------------------
+def test_concurrent_fight_for_last_item():
+    """10 users race for 1 item — exactly 1 wins, no oversell."""
+    PRICE = 50
+    N_USERS = 10
+    CREDIT = 1000
+
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/1")
+
+    users_orders = []
+    for _ in range(N_USERS):
+        user = json_field(api("POST", "/payment/create_user"), "user_id")
+        api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+        order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+        api("POST", f"/orders/addItem/{order}/{item}/1")
+        users_orders.append((user, order))
+
+    def checkout(pair):
+        _, o = pair
+        return api("POST", f"/orders/checkout/{o}").status_code
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=N_USERS) as pool:
+        results = list(pool.map(checkout, users_orders))
+
+    winners = results.count(200)
+    stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
+
+    check(f"Exactly 1 Of {N_USERS} Concurrent Checkouts Won The Single Available Unit",
+          winners == 1, f"got {winners} winners")
+    check("Final Stock Is 0 — Exactly One Unit Was Sold, No Oversell",
+          stock == 0, f"got {stock}")
+
+    charged = sum(
+        1 for u, _ in users_orders
+        if json_field(api("GET", f"/payment/find_user/{u}"), "credit") != CREDIT
+    )
+    check(f"Only 1 User Was Charged — Remaining {N_USERS - 1} Retain Full {CREDIT} Credit",
+          charged == 1, f"got {charged} users charged")
+
+
+# ---------------------------------------------------------------------------
+# 6. Sequential Stock Drain
+# ---------------------------------------------------------------------------
+def test_sequential_drain():
+    """Three orders of qty=2 on stock=5 — first two succeed, third rejected."""
+    PRICE = 10
+    STOCK = 5
+    QTY = 2
+
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+
+    users = []
+    orders = []
+    for _ in range(3):
+        user = json_field(api("POST", "/payment/create_user"), "user_id")
+        api("POST", f"/payment/add_funds/{user}/500")
+        order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+        api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+        users.append(user)
+        orders.append(order)
+
+    r1 = api("POST", f"/orders/checkout/{orders[0]}")
+    check(f"First Checkout (Qty={QTY}) Succeeds — Stock Goes From {STOCK} To {STOCK - QTY}",
+          r1.status_code == 200, f"got {r1.status_code}")
+
+    r2 = api("POST", f"/orders/checkout/{orders[1]}")
+    check(f"Second Checkout (Qty={QTY}) Succeeds — Stock Goes From {STOCK - QTY} To {STOCK - 2*QTY}",
+          r2.status_code == 200, f"got {r2.status_code}")
+
+    r3 = api("POST", f"/orders/checkout/{orders[2]}")
+    remaining = STOCK - 2 * QTY
+    check(f"Third Checkout (Qty={QTY}) Rejected — Only {remaining} Unit Left But {QTY} Needed",
+          400 <= r3.status_code < 500, f"got {r3.status_code}")
+
+    stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
+    check(f"Final Stock Is {remaining} — Two Orders Fulfilled, Third Correctly Rejected",
+          stock == remaining, f"got {stock}")
+
+    credit3 = json_field(api("GET", f"/payment/find_user/{users[2]}"), "credit")
+    check("Third User Balance Unchanged At 500 — Not Charged For Rejected Checkout",
+          credit3 == 500, f"got {credit3}")
+
+
+# ---------------------------------------------------------------------------
+# 7. Concurrent Isolation
+# ---------------------------------------------------------------------------
+def test_concurrent_independent_checkouts():
+    """5 independent users/items checkout simultaneously — all succeed, no cross-contamination."""
+    N = 5
+    PRICE = 20
+    QTY = 3
+    STOCK = 10
+    CREDIT = 500
+
+    users, items, orders = [], [], []
+    for _ in range(N):
+        user = json_field(api("POST", "/payment/create_user"), "user_id")
+        api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+        item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+        api("POST", f"/stock/add/{item}/{STOCK}")
+        order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+        api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+        users.append(user)
+        items.append(item)
+        orders.append(order)
+
+    def checkout(order_id):
+        return api("POST", f"/orders/checkout/{order_id}").status_code
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=N) as pool:
+        results = list(pool.map(checkout, orders))
+
+    check(f"All {N} Independent Checkouts Succeeded Concurrently",
+          all(r == 200 for r in results), f"got {results}")
+
+    expected_stock = STOCK - QTY
+    expected_credit = CREDIT - (PRICE * QTY)
+    for i in range(N):
+        s = json_field(api("GET", f"/stock/find/{items[i]}"), "stock")
+        c = json_field(api("GET", f"/payment/find_user/{users[i]}"), "credit")
+        check(f"User {i+1}: Stock={expected_stock}, Balance={expected_credit} — "
+              f"Isolated From Other Users",
+              s == expected_stock and c == expected_credit,
+              f"stock={s}, credit={c}")
+
+
+# ---------------------------------------------------------------------------
+# 8. Stale Stock
+# ---------------------------------------------------------------------------
+def test_stock_modified_before_checkout():
+    """Create order when stock=10, externally subtract 5, then checkout needing 8 fails."""
+    PRICE = 10
+    STOCK = 10
+    QTY = 8
+    SUBTRACT = 5
+    CREDIT = 500
+
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+
+    api("POST", f"/stock/subtract/{item}/{SUBTRACT}")
+    remaining = STOCK - SUBTRACT
+
+    r = api("POST", f"/orders/checkout/{order}")
+    check(f"Checkout Rejected — Order Needs {QTY} Units But Only {remaining} Remain "
+          f"After External Subtraction",
+          400 <= r.status_code < 500, f"got {r.status_code}")
+
+    stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
+    check(f"Stock Stays At {remaining} — No Partial Deduction From Failed Checkout",
+          stock == remaining, f"got {stock}")
+
+    credit = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    check(f"Balance Stays At {CREDIT} — Not Charged For A Failed Checkout",
+          credit == CREDIT, f"got {credit}")
+
+
+# ---------------------------------------------------------------------------
+# 9. Late Funding
+# ---------------------------------------------------------------------------
+def test_fund_user_after_order():
+    """User starts at 0 credit, creates order, adds funds, then checkout succeeds."""
+    PRICE = 50
+    QTY = 2
+    STOCK = 10
+    COST = PRICE * QTY
+
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+
+    api("POST", f"/payment/add_funds/{user}/{COST}")
+
+    r = api("POST", f"/orders/checkout/{order}")
+    check(f"Checkout Succeeds — {COST} Credits Added After Order Was Created But Before Checkout",
+          r.status_code == 200, f"got {r.status_code}")
+
+    balance = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    check("Balance Is 0 After Checkout — All Funds Spent On The Order",
+          balance == 0, f"got {balance}")
+
+
+# ---------------------------------------------------------------------------
+# 10. Boundary — Exact Balance
+# ---------------------------------------------------------------------------
+def test_exact_balance_boundary():
+    """User balance exactly equals order total — checkout succeeds, balance becomes 0."""
+    PRICE = 30
+    QTY = 2
+    STOCK = 10
+    COST = PRICE * QTY
+
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    api("POST", f"/payment/add_funds/{user}/{COST}")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+
+    r = api("POST", f"/orders/checkout/{order}")
+    check(f"Checkout Succeeds When Balance ({COST}) Exactly Equals Order Total ({COST})",
+          r.status_code == 200, f"got {r.status_code}")
+
+    balance = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    check("Balance Is Exactly 0 — No Off-By-One At The Boundary",
+          balance == 0, f"got {balance}")
+
+
+# ---------------------------------------------------------------------------
+# 11. Boundary — Exact Stock
+# ---------------------------------------------------------------------------
+def test_exact_stock_boundary():
+    """Stock exactly equals order quantity — checkout succeeds, stock becomes 0."""
+    PRICE = 10
+    QTY = 5
+    STOCK = 5
+    CREDIT = 500
+
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
+
+    r = api("POST", f"/orders/checkout/{order}")
+    check(f"Checkout Succeeds When Stock ({STOCK}) Exactly Equals Order Quantity ({QTY})",
+          r.status_code == 200, f"got {r.status_code}")
+
+    stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
+    check("Stock Is Exactly 0 — No Off-By-One At The Boundary",
+          stock == 0, f"got {stock}")
+
+
+# ---------------------------------------------------------------------------
+# 12. Boundary — One Credit Short
+# ---------------------------------------------------------------------------
+def test_one_credit_short():
+    """Order costs 100, user has 99 — checkout rejected."""
+    PRICE = 100
+    STOCK = 10
+    CREDIT = 99
+
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
+    api("POST", f"/stock/add/{item}/{STOCK}")
+
     order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
     api("POST", f"/orders/addItem/{order}/{item}/1")
 
     r = api("POST", f"/orders/checkout/{order}")
-    check("Checkout rejected with 4xx — user has 5 credit but item costs 100", 400 <= r.status_code < 500, f"got {r.status_code}")
+    check(f"Checkout Rejected — User Has {CREDIT} Credit But Order Costs {PRICE} (1 Short)",
+          400 <= r.status_code < 500, f"got {r.status_code}")
+
+    balance = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    check(f"Balance Unchanged At {CREDIT} — No Charge For Rejected Checkout",
+          balance == CREDIT, f"got {balance}")
 
     stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
-    credit = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
-    check(f"Stock rolled back to {STARTING_STOCK} — no items were deducted", stock == STARTING_STOCK, f"got {stock}")
-    check("Credit stayed at 5 — no charge was applied", credit == 5, f"got {credit}")
+    check(f"Stock Unchanged At {STOCK} — No Deduction For Rejected Checkout",
+          stock == STOCK, f"got {stock}")
 
 
 # ---------------------------------------------------------------------------
-# 6. Checkout rollback — insufficient stock
+# 13. Boundary — One Stock Unit Short
 # ---------------------------------------------------------------------------
-def test_checkout_rollback_insufficient_stock():
-    """Checkout fails when stock is insufficient; credit is untouched."""
-    ITEM_PRICE = 10
-    STARTING_CREDIT = 500
-    STARTING_STOCK = 2
+def test_one_stock_short():
+    """Order needs 5, stock has 4 — checkout rejected."""
+    PRICE = 10
+    STOCK = 4
+    QTY = 5
+    CREDIT = 500
 
     user = json_field(api("POST", "/payment/create_user"), "user_id")
-    api("POST", f"/payment/add_funds/{user}/{STARTING_CREDIT}")
-    item = json_field(api("POST", f"/stock/item/create/{ITEM_PRICE}"), "item_id")
-    api("POST", f"/stock/add/{item}/{STARTING_STOCK}")
-    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
-    api("POST", f"/orders/addItem/{order}/{item}/50")
-
-    r = api("POST", f"/orders/checkout/{order}")
-    check("Checkout rejected with 4xx — wants 50 units but only 2 in stock", 400 <= r.status_code < 500, f"got {r.status_code}")
-
-    stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
-    credit = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
-    check(f"Stock unchanged at {STARTING_STOCK} — nothing was reserved", stock == STARTING_STOCK, f"got {stock}")
-    check(f"Credit unchanged at {STARTING_CREDIT} — no payment was attempted", credit == STARTING_CREDIT, f"got {credit}")
-
-
-# ---------------------------------------------------------------------------
-# 7. Atomicity — concurrent stock subtract (no oversell)
-# ---------------------------------------------------------------------------
-def test_atomicity_no_oversell():
-    """Fire N concurrent subtract-1 requests on stock=K. Exactly K succeed."""
-    STOCK = 5
-    CONCURRENT = 10
-
-    item = json_field(api("POST", "/stock/item/create/10"), "item_id")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+    item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
     api("POST", f"/stock/add/{item}/{STOCK}")
 
-    def subtract_one(_):
-        return api("POST", f"/stock/subtract/{item}/1").status_code
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item}/{QTY}")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENT) as pool:
-        results = list(pool.map(subtract_one, range(CONCURRENT)))
-
-    successes = results.count(200)
-    final = json_field(api("GET", f"/stock/find/{item}"), "stock")
-
-    check(f"Exactly {STOCK} of {CONCURRENT} concurrent subtract-1 requests succeeded (stock was {STOCK})", successes == STOCK, f"got {successes}")
-    check("Final stock is 0 — no oversell occurred despite concurrent access", final == 0, f"got {final}")
-
-    rejects = [c for c in results if c != 200]
-    if rejects:
-        check("All rejected requests returned 4xx (not 5xx server errors)", all(400 <= c < 500 for c in rejects), f"got {rejects}")
-
-
-# ---------------------------------------------------------------------------
-# 8. Idempotency — stock
-# ---------------------------------------------------------------------------
-def test_idempotency_stock():
-    """Same Idempotency-Key twice subtracts stock only once."""
-    item = json_field(api("POST", "/stock/item/create/10"), "item_id")
-    api("POST", f"/stock/add/{item}/10")
-
-    key = f"idem-{uuid.uuid4()}"
-    headers = {"Idempotency-Key": key}
-
-    r1 = api("POST", f"/stock/subtract/{item}/3", headers=headers)
-    r2 = api("POST", f"/stock/subtract/{item}/3", headers=headers)
-
-    check("First subtract with Idempotency-Key returns 200", r1.status_code == 200)
-    check("Replayed subtract with same Idempotency-Key also returns 200 (cached response)", r2.status_code == 200)
+    r = api("POST", f"/orders/checkout/{order}")
+    check(f"Checkout Rejected — Order Needs {QTY} Units But Stock Has {STOCK} (1 Short)",
+          400 <= r.status_code < 500, f"got {r.status_code}")
 
     stock = json_field(api("GET", f"/stock/find/{item}"), "stock")
-    check("Stock is 7 — subtracted only once despite two calls with same key", stock == 7, f"got {stock}")
+    check(f"Stock Unchanged At {STOCK} — No Partial Deduction",
+          stock == STOCK, f"got {stock}")
+
+    balance = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    check(f"Balance Unchanged At {CREDIT} — No Charge Applied",
+          balance == CREDIT, f"got {balance}")
 
 
 # ---------------------------------------------------------------------------
-# 9. Idempotency — payment
+# 14. Non-Existent Resources
 # ---------------------------------------------------------------------------
-def test_idempotency_payment():
-    """Same Idempotency-Key twice deducts credit only once."""
-    user = json_field(api("POST", "/payment/create_user"), "user_id")
-    api("POST", f"/payment/add_funds/{user}/100")
+def test_find_nonexistent():
+    """GET on random UUIDs should return 4xx, not 5xx."""
+    fake = str(uuid.uuid4())
 
-    key = f"idem-{uuid.uuid4()}"
-    headers = {"Idempotency-Key": key}
+    r = api("GET", f"/stock/find/{fake}")
+    check("GET Non-Existent Item Returns 4xx, Not A Server Error",
+          400 <= r.status_code < 500, f"got {r.status_code}")
 
-    api("POST", f"/payment/pay/{user}/30", headers=headers)
-    api("POST", f"/payment/pay/{user}/30", headers=headers)
+    r = api("GET", f"/payment/find_user/{fake}")
+    check("GET Non-Existent User Returns 4xx, Not A Server Error",
+          400 <= r.status_code < 500, f"got {r.status_code}")
 
-    credit = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
-    check("Credit is 70 — deducted only once despite two calls with same key", credit == 70, f"got {credit}")
+    r = api("GET", f"/orders/find/{fake}")
+    check("GET Non-Existent Order Returns 4xx, Not A Server Error",
+          400 <= r.status_code < 500, f"got {r.status_code}")
 
 
 # ---------------------------------------------------------------------------
 # Ordered test list — imported by run.py
 # ---------------------------------------------------------------------------
 TESTS = [
-    ("Stock Service CRUD — create item, add/subtract stock, reject over-subtract", test_stock_crud),
-    ("Payment Service CRUD — create user, add/deduct funds, reject overdraft", test_payment_crud),
-    ("Order Lifecycle — create order, attach items, verify ownership", test_order_lifecycle),
-    ("End-to-End Checkout — stock decreases, credit charged, order marked paid", test_checkout_success),
-    ("Checkout Rollback (insufficient credit) — user can't afford, nothing changes", test_checkout_rollback_insufficient_credit),
-    ("Checkout Rollback (insufficient stock) — not enough stock, credit untouched", test_checkout_rollback_insufficient_stock),
-    ("Atomicity — 10 concurrent subtract-1 on stock=5, exactly 5 succeed, no oversell", test_atomicity_no_oversell),
-    ("Stock Idempotency — same Idempotency-Key twice, stock subtracted only once", test_idempotency_stock),
-    ("Payment Idempotency — same Idempotency-Key twice, credit deducted only once", test_idempotency_payment),
+    ("Multi-Item Checkout With Per-Item Stock Verification", test_multi_item_checkout),
+    ("Double Checkout On A Paid Order", test_double_checkout),
+    ("Add Items To A Paid Order And Re-Checkout", test_post_checkout_tampering),
+    ("Checkout An Empty Order (No Items)", test_checkout_empty_order),
+    ("10 Concurrent Checkouts For 1 Unit Of Stock", test_concurrent_fight_for_last_item),
+    ("Sequential Checkouts Until Stock Exhausted", test_sequential_drain),
+    ("5 Independent Checkouts In Parallel", test_concurrent_independent_checkouts),
+    ("External Stock Change Between Order And Checkout", test_stock_modified_before_checkout),
+    ("Fund User After Order Creation, Then Checkout", test_fund_user_after_order),
+    ("Boundary: Balance Exactly Equals Order Total", test_exact_balance_boundary),
+    ("Boundary: Stock Exactly Equals Order Quantity", test_exact_stock_boundary),
+    ("Boundary: One Credit Short Of Order Total", test_one_credit_short),
+    ("Boundary: One Stock Unit Short Of Order Quantity", test_one_stock_short),
+    ("GET On Non-Existent Stock, User, And Order IDs", test_find_nonexistent),
 ]

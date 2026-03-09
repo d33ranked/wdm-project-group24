@@ -8,7 +8,7 @@ Single entry point for all custom tests.
 - Updates docker-compose.yml with the chosen mode
 - Tears down, rebuilds, and starts all containers
 - Waits for services to become healthy
-- Runs the appropriate test modules with a 5s countdown between tests
+- Runs the appropriate test modules; user presses Enter between test cases
 """
 
 import importlib
@@ -86,8 +86,12 @@ def _run(cmd: str, cwd: str = PROJECT_ROOT, check_rc: bool = True):
     """Run a shell command, streaming output."""
     print(f"  $ {cmd}")
     result = subprocess.run(
-        cmd, shell=True, cwd=cwd,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cmd,
+        shell=True,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     if result.stdout.strip():
         for line in result.stdout.strip().splitlines():
@@ -109,14 +113,15 @@ def set_transaction_mode(mode: str):
     )
     with open(COMPOSE_FILE, "w") as f:
         f.write(updated)
-    print(f"  docker-compose.yml updated: TRANSACTION_MODE={mode}")
+    print(f"  Docker Compose Updated! Transaction Mode: {mode}")
 
 
 def docker_clean_and_start():
     """Tear down, rebuild, and start all containers."""
-    print("\n" + "=" * 60)
-    print("  DOCKER: clean → build → start")
-    print("=" * 60)
+    sep = "=" * LINE_WIDTH
+    print("\n" + sep)
+    print("  Docker Compose Clean & Start")
+    print(sep)
     _run("docker compose down -v --remove-orphans")
     _run("docker compose build --quiet")
     _run("docker compose up -d")
@@ -125,7 +130,7 @@ def docker_clean_and_start():
 
 def wait_for_services(timeout: int = 90):
     """Poll the gateway until all three services respond."""
-    print("  Waiting for services to become healthy...")
+    print("  Waiting for Services to Become Healthy...")
     endpoints = [
         "/stock/item/create/1",
         "/payment/create_user",
@@ -138,26 +143,24 @@ def wait_for_services(timeout: int = 90):
                 for ep in endpoints
             )
             if ok:
-                print("  All services are up.\n")
+                print("  All Services Are Up.\n")
                 return
         except requests.ConnectionError:
             pass
         time.sleep(3)
-    print("  Timed out waiting for services.")
+    print("  Timed Out Waiting for Services.")
     sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
-# Countdown between tests
+# Pause between tests
 # ---------------------------------------------------------------------------
-def countdown(seconds: int = 5):
-    """Visual countdown between tests."""
-    for i in range(seconds, 0, -1):
-        sys.stdout.write(f"\r  Next test in {i}s... ")
-        sys.stdout.flush()
-        time.sleep(1)
-    sys.stdout.write("\r" + " " * 30 + "\r")
-    sys.stdout.flush()
+LINE_WIDTH = 60
+
+
+def wait_for_enter():
+    """Pause until the user presses Enter before the next test."""
+    input("\n  Press Enter to run the next test... ")
 
 
 # ---------------------------------------------------------------------------
@@ -170,27 +173,30 @@ def collect_tests(module_name: str):
 
 
 def run_suite(label: str, tests: list):
-    """Run a list of (name, func) test pairs with countdown between them."""
+    """Run a list of (name, func) test pairs; user presses Enter between them."""
     if not tests:
-        print(f"\n{'=' * 60}")
+        sep = "=" * LINE_WIDTH
+        print(f"\n{sep}")
         print(f"  {label}: no tests defined yet")
-        print(f"{'=' * 60}")
+        print(sep)
         return 0, 0
 
-    print(f"\n{'=' * 60}")
-    print(f"  {label}  ({len(tests)} tests)")
-    print(f"{'=' * 60}")
+    sep = "=" * LINE_WIDTH
+    dash = "-" * LINE_WIDTH
+    print(f"\n{sep}")
+    print(f"  {label}  ({len(tests)} Test Cases)")
+    print(sep)
 
-    suite_pass = 0
-    suite_fail = 0
+    case_pass = 0
+    case_fail = 0
 
     for idx, (name, func) in enumerate(tests):
         if idx > 0:
-            countdown()
+            wait_for_enter()
 
         reset_counts()
         print(f"\n  [{idx + 1}/{len(tests)}] {name}")
-        print(f"  {'-' * 50}")
+        print(dash)
         try:
             func()
         except Exception as e:
@@ -198,24 +204,27 @@ def run_suite(label: str, tests: list):
             global _fail_count
             _fail_count += 1
 
-        p, f = get_counts()
-        suite_pass += p
-        suite_fail += f
+        _, f = get_counts()
+        if f == 0:
+            case_pass += 1
+        else:
+            case_fail += 1
 
-    return suite_pass, suite_fail
+    return case_pass, case_fail
 
 
 def main():
+    sep = "=" * LINE_WIDTH
     print()
-    print("=" * 60)
-    print("  WDM Microservices — Custom Test Suite")
-    print("=" * 60)
+    print(sep)
+    print("  Group 35 Test Suite")
+    print(sep)
 
     # --- Ask for mode ---
     print()
-    mode = input("  Enter TRANSACTION_MODE [TPC / SAGA]: ").strip().upper()
+    mode = input("  Enter Transaction Mode (TPC / SAGA): ").strip().upper()
     if mode not in ("TPC", "SAGA"):
-        print("  Invalid mode. Must be TPC or SAGA.")
+        print("  Invalid Input. Must explicitly be TPC or SAGA.")
         sys.exit(1)
 
     # --- Update compose and restart containers ---
@@ -225,35 +234,40 @@ def main():
 
     # --- Collect tests ---
     common_tests = collect_tests("test_common")
-    mode_tests = collect_tests("test_tpc") if mode == "TPC" else collect_tests("test_sagas")
+    mode_tests = (
+        collect_tests("test_tpc") if mode == "TPC" else collect_tests("test_sagas")
+    )
     mode_label = "2PC (Two-Phase Commit)" if mode == "TPC" else "SAGA"
 
     # --- Run ---
     total_pass, total_fail = 0, 0
 
-    p, f = run_suite("COMMON TESTS", common_tests)
+    p, f = run_suite("Common Test Suite", common_tests)
     total_pass += p
     total_fail += f
 
     if common_tests and mode_tests:
-        countdown()
+        wait_for_enter()
 
-    p, f = run_suite(f"{mode_label} TESTS", mode_tests)
+    p, f = run_suite(f"{mode_label} Test Suite", mode_tests)
     total_pass += p
     total_fail += f
 
-    # --- Final summary ---
-    print(f"\n{'=' * 60}")
-    print(f"  FINAL SUMMARY")
-    print(f"{'=' * 60}")
-    print(f"    Mode:   {mode}")
-    print(f"    Passed: \033[92m{total_pass}\033[0m")
-    print(f"    Failed: \033[91m{total_fail}\033[0m")
+    # --- Final summary (counts are test cases, not granular checks) ---
+    total_cases = total_pass + total_fail
+    sep = "=" * LINE_WIDTH
+    print(f"\n{sep}")
+    print(f"  Final Summary")
+    print(sep)
+    print(f"    Mode:        {mode}")
+    print(f"    Test cases:  {total_cases}")
+    print(f"    Passed:      \033[92m{total_pass}\033[0m")
+    print(f"    Failed:      \033[91m{total_fail}\033[0m")
     if total_fail == 0:
-        print(f"    Result: \033[92mALL TESTS PASSED\033[0m")
+        print(f"    Result:      \033[92mALL TESTS PASSED\033[0m")
     else:
-        print(f"    Result: \033[91mSOME TESTS FAILED\033[0m")
-    print(f"{'=' * 60}\n")
+        print(f"    Result:      \033[91mSOME TESTS FAILED\033[0m")
+    print(sep + "\n")
 
     sys.exit(0 if total_fail == 0 else 1)
 
