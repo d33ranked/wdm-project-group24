@@ -12,3 +12,14 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     body TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS transaction_log (
+    txn_id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    prepared_stock JSONB NOT NULL DEFAULT '[]',
+    prepared_payment BOOLEAN NOT NULL DEFAULT FALSE,
+    user_id TEXT NOT NULL,
+    total_cost INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);

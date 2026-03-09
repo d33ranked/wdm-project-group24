@@ -23,8 +23,8 @@ def create_conn_pool(retries=10, delay=2):
     for attempt in range(retries):
         try:
             return psycopg2.pool.ThreadedConnectionPool(
-                minconn=2,
-                maxconn=10,
+                minconn=10,
+                maxconn=100,
                 host=os.environ["POSTGRES_HOST"],
                 port=int(os.environ["POSTGRES_PORT"]),
                 dbname=os.environ["POSTGRES_DB"],
@@ -174,6 +174,81 @@ def remove_credit(user_id: str, amount: int):
     return Response(body, status=200)
 
 
+@app.post("/prepare/<txn_id>/<user_id>/<amount>")
+def prepare_transaction(txn_id: str, user_id: str, amount: int):
+    amount = int(amount)
+    cur = g.conn.cursor()
+
+    # check if the transaction is already prepared
+    cur.execute("SELECT 1 FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+    if cur.fetchone() is not None:
+        cur.close()
+        return Response("Transaction already prepared", status=200)
+
+    # lock user row for update
+    cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+
+    # check if the user has enough credit
+    row = cur.fetchone()
+    if row is None:
+        cur.close()
+        abort(400, f"User: {user_id} not found!")
+
+    current_credit = row[0]
+    if current_credit < amount:
+        cur.close()
+        abort(400, f"User: {user_id} has insufficient credit!")
+
+    # deduct and record for possible rollback
+    cur.execute(
+        "UPDATE users SET credit = credit - %s WHERE id = %s", (amount, user_id)
+    )
+    cur.execute(
+        "INSERT INTO prepared_transactions (txn_id, user_id, amount) VALUES (%s, %s, %s)",
+        (txn_id, user_id, amount),
+    )
+    cur.close()
+    return Response("Transaction prepared", status=200)
+
+
+@app.post("/commit/<txn_id>")
+def commit_transaction(txn_id: str):
+    cur = g.conn.cursor()
+
+    # remove the rollback records
+    cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+    cur.close()
+    return Response("Transaction committed", status=200)
+
+
+@app.post("/abort/<txn_id>")
+def abort_transaction(txn_id: str):
+    cur = g.conn.cursor()
+
+    # fetch (only one) rollback record for this transaction
+    cur.execute(
+        "SELECT user_id, amount FROM prepared_transactions WHERE txn_id = %s", (txn_id,)
+    )
+    row = cur.fetchone()
+
+    if row is not None:
+        user_id, amount = row
+
+        # lock the user row for update
+        cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+
+        # add back the credit
+        if cur.fetchone() is not None:
+            cur.execute(
+                "UPDATE users SET credit = credit + %s WHERE id = %s", (amount, user_id)
+            )
+
+        # delete the rollback record
+        cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+    cur.close()
+    return Response("Transaction aborted", status=200)
+
+
 # generate advisory lock id from idempotency key
 def idempotency_token(key: str) -> int:
     return int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**31)
@@ -207,6 +282,51 @@ def save_idempotency(status_code, body):
         (idem_key, status_code, body),
     )
     cur.close()
+
+
+def recovery_tpc():
+    conn = conn_pool.getconn()
+
+    # on startup, check for stale prepared transactions
+    try:
+        cur = conn.cursor()
+
+        # get all stale prepared transactions (older than 5 minutes)
+        cur.execute(
+            "SELECT txn_id, user_id, amount FROM prepared_transactions WHERE created_at < NOW() - INTERVAL '5 minutes'"
+        )
+        rows = cur.fetchall()
+
+        # return if none found
+        if not rows:
+            cur.close()
+            app.logger.info("RECOVERY: No stale prepared transactions found")
+            return
+
+        # process each - restore credit and remove the rollback record
+        for txn_id, user_id, amount in rows:
+            app.logger.warning(
+                f"RECOVERY: Aborting stale prepared transaction txn={txn_id}, user={user_id}, amount={amount}"
+            )
+            cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+            if cur.fetchone() is not None:
+                cur.execute(
+                    "UPDATE users SET credit = credit + %s WHERE id = %s",
+                    (amount, user_id),
+                )
+            cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+            conn.commit()
+
+        cur.close()
+    finally:
+        conn_pool.putconn(conn)
+
+
+with app.app_context():
+    try:
+        recovery_tpc()
+    except Exception as e:
+        app.logger.warning(f"RECOVERY PAYMENT: Error during recovery: {e}")
 
 
 if __name__ == "__main__":
