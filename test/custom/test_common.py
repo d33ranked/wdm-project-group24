@@ -81,8 +81,8 @@ def test_double_checkout():
     credit_after_first = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
 
     r2 = api("POST", f"/orders/checkout/{order}")
-    check("Second Checkout On The Same Paid Order Is Rejected",
-          r2.status_code != 200 or True)
+    check("Second Checkout On A Paid Order Is Skipped",
+          r2.status_code == 200, f"got {r2.status_code}")
 
     stock_now = json_field(api("GET", f"/stock/find/{item}"), "stock")
     credit_now = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
@@ -145,8 +145,8 @@ def test_checkout_empty_order():
     order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
 
     r = api("POST", f"/orders/checkout/{order}")
-    check("Empty Order Checkout Does Not Cause A Server Error (No 5xx)",
-          r.status_code < 500, f"got {r.status_code}")
+    check("Empty Order Checkout Is Skipped",
+          r.status_code == 200, f"got {r.status_code}")
 
 
 # ---------------------------------------------------------------------------

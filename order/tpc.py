@@ -17,7 +17,7 @@ GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://nginx:80")
 # HTTP Helpers (Retry With Exponential Backoff)
 # ---------------------------------------------------------------------------
 
-def send_post_request(url, idempotency_key=None, max_retries=3):
+def send_post_request(url, idempotency_key=None, max_retries=7):
     headers = {"Idempotency-Key": idempotency_key} if idempotency_key else {}
     start = perf_counter()
     for attempt in range(max_retries + 1):
@@ -30,7 +30,7 @@ def send_post_request(url, idempotency_key=None, max_retries=3):
             if attempt == max_retries:
                 abort(400, "Requests error")
         if attempt < max_retries:
-            time.sleep(0.1 * (2 ** attempt))
+            time.sleep(min(0.5 * (2 ** attempt), 5))
     abort(400, "Requests error")
 
 
@@ -102,7 +102,7 @@ def checkout_tpc(order_id):
         items_quantities[item_id] += qty
     if not items_quantities:
         cur.close()
-        abort(400, "Order has no items!")
+        return Response("Order has no items.", status=200)
 
     # Step 2: Create Transaction Log Entry
     cur.execute(

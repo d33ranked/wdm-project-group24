@@ -123,7 +123,7 @@ def checkout_saga_http(order_id, conn):
         items_quantities[item_id] += quantity
     if not items_quantities:
         cur.close()
-        abort(400, "Order has no items!")
+        return Response("Order has no items.", status=200)
 
     # Step 2: Subtract Stock Per Item (Rollback On Failure)
     removed_items = []
@@ -176,14 +176,14 @@ def handle_checkout_saga(conn, order_id, headers):
 
     if order["paid"]:
         conn.rollback()
-        return 409, {"error": f"Order {order_id} is already paid"}
+        return 200, f"Order {order_id} is already paid for!"
 
     items_quantities: dict[str, int] = defaultdict(int)
     for item_id, quantity in order["items"]:
         items_quantities[item_id] += quantity
     if not items_quantities:
         conn.rollback()
-        return 400, {"error": "Order has no items"}
+        return 200, "Order has no items."
 
     # Create Saga Record, Persist Before Publishing
     saga_id = idem_key or str(uuid.uuid4())
