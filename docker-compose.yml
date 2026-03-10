@@ -32,6 +32,7 @@ services:
   order-db-1:
     build: ./patroni
     image: patroni:latest
+    restart: always
     environment:
       - PATRONI_NAME=order-db-1
     volumes:
@@ -52,6 +53,7 @@ services:
   order-db-2:
     build: ./patroni
     image: patroni:latest
+    restart: always
     environment:
       - PATRONI_NAME=order-db-2
     volumes:
@@ -89,6 +91,7 @@ services:
   stock-db-1:
     build: ./patroni
     image: patroni:latest
+    restart: always
     environment:
       - PATRONI_NAME=stock-db-1
     volumes:
@@ -109,6 +112,7 @@ services:
   stock-db-2:
     build: ./patroni
     image: patroni:latest
+    restart: always
     environment:
       - PATRONI_NAME=stock-db-2
     volumes:
@@ -146,6 +150,7 @@ services:
   payment-db-1:
     build: ./patroni
     image: patroni:latest
+    restart: always
     environment:
       - PATRONI_NAME=payment-db-1
     volumes:
@@ -166,6 +171,7 @@ services:
   payment-db-2:
     build: ./patroni
     image: patroni:latest
+    restart: always
     environment:
       - PATRONI_NAME=payment-db-2
     volumes:
@@ -187,6 +193,7 @@ services:
   # TODO: Remove code duplication
   etcd1:
     image: quay.io/coreos/etcd:v3.5.12
+    restart: always
     environment:
       - ETCD_NAME=etcd1
       - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd1:2380
@@ -199,6 +206,7 @@ services:
 
   etcd2:
     image: quay.io/coreos/etcd:v3.5.12
+    restart: always
     environment:
       - ETCD_NAME=etcd2
       - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd2:2380
@@ -211,6 +219,7 @@ services:
 
   etcd3:
     image: quay.io/coreos/etcd:v3.5.12
+    restart: always
     environment:
       - ETCD_NAME=etcd3
       - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd3:2380
