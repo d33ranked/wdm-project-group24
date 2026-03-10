@@ -38,7 +38,12 @@ services:
       - ./patroni/patroni-order.yml:/etc/patroni/patroni.yml:ro
       - ./order/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./order/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
-
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     depends_on:
       - etcd1
       - etcd2
@@ -53,6 +58,12 @@ services:
       - ./patroni/patroni-order.yml:/etc/patroni/patroni.yml:ro
       - ./order/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./order/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     depends_on:
       - etcd1
       - etcd2
@@ -84,6 +95,12 @@ services:
       - ./patroni/patroni-stock.yml:/etc/patroni/patroni.yml:ro
       - ./stock/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./stock/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     depends_on:
       - etcd1
       - etcd2
@@ -98,6 +115,12 @@ services:
       - ./patroni/patroni-stock.yml:/etc/patroni/patroni.yml:ro
       - ./stock/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./stock/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     depends_on:
       - etcd1
       - etcd2
@@ -129,6 +152,12 @@ services:
       - ./patroni/patroni-payment.yml:/etc/patroni/patroni.yml:ro
       - ./payment/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./payment/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     depends_on:
       - etcd1
       - etcd2
@@ -143,6 +172,12 @@ services:
       - ./patroni/patroni-payment.yml:/etc/patroni/patroni.yml:ro
       - ./payment/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./payment/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
     depends_on:
       - etcd1
       - etcd2

@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     python3-urllib3 \
     python3-requests \
     gettext-base \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Patroni with etcd support
