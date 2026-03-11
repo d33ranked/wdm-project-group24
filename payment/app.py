@@ -11,6 +11,8 @@ import logging
 import psycopg2
 import psycopg2.pool
 
+from db_utils import create_ha_pool
+
 from time import perf_counter
 from flask import Flask, jsonify, abort, request, Response, g
 
@@ -19,29 +21,7 @@ DB_ERROR_STR = "DB error"
 app = Flask("payment-service")
 
 
-def create_conn_pool(retries=10, delay=2):
-    for attempt in range(retries):
-        try:
-            return psycopg2.pool.ThreadedConnectionPool(
-                minconn=10,
-                maxconn=100,
-                host=os.environ["POSTGRES_HOST"],
-                port=int(os.environ["POSTGRES_PORT"]),
-                dbname=os.environ["POSTGRES_DB"],
-                user=os.environ["POSTGRES_USER"],
-                password=os.environ["POSTGRES_PASSWORD"],
-            )
-        except psycopg2.OperationalError:
-            if attempt < retries - 1:
-                print(
-                    f"PAYMENT: PostgreSQL not ready, retrying in {delay}s... (attempt {attempt+1}/{retries})"
-                )
-                time.sleep(delay)
-            else:
-                raise
-
-
-conn_pool = create_conn_pool()
+conn_pool = create_ha_pool(service_name="PAYMENT")
 
 
 @app.before_request

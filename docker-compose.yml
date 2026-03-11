@@ -17,63 +17,218 @@ services:
       - TRANSACTION_MODE=TPC
       - GATEWAY_URL=http://gateway:80
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    command: gunicorn -k gevent -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
-    env_file:
-      - env/order_db.env
-    depends_on:
-      - order-db
-      - kafka
-
-  order-db:
-    image: postgres
-    environment:
+      - POSTGRES_HOSTS=order-db-1,order-db-2
+      - PATRONI_PORT=8008
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=orders
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=orders
+    command: gunicorn -k gevent -b 0.0.0.0:5000 -w 2 --timeout 300 --log-level=info app:app
+    depends_on:
+      - order-db-1
+      - order-db-2
+      - kafka
+
+  order-db-1:
+    build: ./patroni
+    image: patroni:latest
+    restart: always
+    environment:
+      - PATRONI_NAME=order-db-1
     volumes:
-      - ./order/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./patroni/patroni-order.yml:/etc/patroni/patroni.yml:ro
+      - ./order/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./order/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+
+  order-db-2:
+    build: ./patroni
+    image: patroni:latest
+    restart: always
+    environment:
+      - PATRONI_NAME=order-db-2
+    volumes:
+      - ./patroni/patroni-order.yml:/etc/patroni/patroni.yml:ro
+      - ./order/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./order/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
 
   stock-service:
     build: ./stock
     image: stock:latest
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    command: gunicorn -k gevent -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
-    env_file:
-      - env/stock_db.env
-    depends_on:
-      - stock-db
-      - kafka
-
-  stock-db:
-    image: postgres
-    environment:
+      - POSTGRES_HOSTS=stock-db-1,stock-db-2
+      - PATRONI_PORT=8008
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=stock
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=stock
+    command: gunicorn -k gevent -b 0.0.0.0:5000 -w 2 --timeout 300 --log-level=info app:app
+    depends_on:
+      - stock-db-1
+      - stock-db-2
+      - kafka
+
+  stock-db-1:
+    build: ./patroni
+    image: patroni:latest
+    restart: always
+    environment:
+      - PATRONI_NAME=stock-db-1
     volumes:
-      - ./stock/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./patroni/patroni-stock.yml:/etc/patroni/patroni.yml:ro
+      - ./stock/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./stock/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+
+  stock-db-2:
+    build: ./patroni
+    image: patroni:latest
+    restart: always
+    environment:
+      - PATRONI_NAME=stock-db-2
+    volumes:
+      - ./patroni/patroni-stock.yml:/etc/patroni/patroni.yml:ro
+      - ./stock/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./stock/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
 
   payment-service:
     build: ./payment
     image: payment:latest
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    command: gunicorn -k gevent -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
-    env_file:
-      - env/payment_db.env
-    depends_on:
-      - payment-db
-      - kafka
-
-  payment-db:
-    image: postgres
-    environment:
+      - POSTGRES_HOSTS=payment-db-1,payment-db-2
+      - PATRONI_PORT=8008
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=payments
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=payments
+    command: gunicorn -k gevent -b 0.0.0.0:5000 -w 2 --timeout 300 --log-level=info app:app
+    depends_on:
+      - payment-db-1
+      - payment-db-2
+      - kafka
+
+  payment-db-1:
+    build: ./patroni
+    image: patroni:latest
+    restart: always
+    environment:
+      - PATRONI_NAME=payment-db-1
     volumes:
-      - ./payment/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./patroni/patroni-payment.yml:/etc/patroni/patroni.yml:ro
+      - ./payment/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./payment/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+
+  payment-db-2:
+    build: ./patroni
+    image: patroni:latest
+    restart: always
+    environment:
+      - PATRONI_NAME=payment-db-2
+    volumes:
+      - ./patroni/patroni-payment.yml:/etc/patroni/patroni.yml:ro
+      - ./payment/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./payment/post_bootstrap.sh:/docker-entrypoint-initdb.d/post_bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      - etcd1
+      - etcd2
+      - etcd3
+
+  # etcd cluster for Patroni leader election
+  # TODO: Remove code duplication
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.12
+    restart: always
+    environment:
+      - ETCD_NAME=etcd1
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd1:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd1:2379
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster
+
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.12
+    restart: always
+    environment:
+      - ETCD_NAME=etcd2
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd2:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd2:2379
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster
+
+  etcd3:
+    image: quay.io/coreos/etcd:v3.5.12
+    restart: always
+    environment:
+      - ETCD_NAME=etcd3
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd3:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd3:2379
+      - ETCD_INITIAL_CLUSTER=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster
 
   kafka:
     image: apache/kafka:latest
