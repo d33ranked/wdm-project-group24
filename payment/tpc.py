@@ -62,23 +62,21 @@ def recovery(conn_pool, logger):
     """Auto-Abort Prepared Transactions Older Than 5 Minutes."""
     conn = conn_pool.getconn()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT txn_id, user_id, amount FROM prepared_transactions "
-            "WHERE created_at < NOW() - INTERVAL '5 minutes'"
-        )
-        rows = cur.fetchall()
-        if not rows:
-            cur.close()
-            logger.info("RECOVERY: No stale prepared transactions found")
-            return
-        for txn_id, user_id, amount in rows:
-            logger.warning(f"RECOVERY: Aborting stale txn={txn_id}, user={user_id}")
-            cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
-            if cur.fetchone() is not None:
-                cur.execute("UPDATE users SET credit = credit + %s WHERE id = %s", (amount, user_id))
-            cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
-            conn.commit()
-        cur.close()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT txn_id, user_id, amount FROM prepared_transactions "
+                "WHERE created_at < NOW() - INTERVAL '5 minutes'"
+            )
+            rows = cur.fetchall()
+            if not rows:
+                logger.info("RECOVERY: No stale prepared transactions found")
+                return
+            for txn_id, user_id, amount in rows:
+                logger.warning("RECOVERY: Aborting stale txn=%s, user=%s", txn_id, user_id)
+                cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+                if cur.fetchone() is not None:
+                    cur.execute("UPDATE users SET credit = credit + %s WHERE id = %s", (amount, user_id))
+                cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
+                conn.commit()
     finally:
         conn_pool.putconn(conn)

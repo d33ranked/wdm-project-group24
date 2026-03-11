@@ -7,7 +7,6 @@ import random
 import logging
 import threading
 from collections import defaultdict
-from typing import Any
 
 from common.idempotency import check_idempotency_kafka, save_idempotency_kafka
 from common.kafka_helpers import build_producer

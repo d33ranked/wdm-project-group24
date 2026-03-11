@@ -6,12 +6,13 @@ import os
 import threading
 import time
 import uuid
-from typing import Any
 
 import kafka
 from flask import Flask, Response, abort, jsonify, request
 from kafka.admin import NewTopic
 from kafka.errors import KafkaError
+
+from common.kafka_helpers import build_producer
 
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka-external:9092")
 REQUEST_TIMEOUT_S = int(os.environ.get("REQUEST_TIMEOUT_MS", "30000")) / 1000
@@ -28,15 +29,6 @@ app = Flask("gateway-service")
 # ---------------------------------------------------------------------------
 # Kafka Helpers
 # ---------------------------------------------------------------------------
-
-def _build_producer(bootstrap_servers):
-    return kafka.KafkaProducer(
-        bootstrap_servers=bootstrap_servers,
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        key_serializer=lambda k: k.encode("utf-8") if k else None,
-        acks="all", retries=3, linger_ms=5, batch_size=32_768,
-    )
-
 
 def ensure_topics(bootstrap_servers, topics):
     try:
@@ -62,7 +54,7 @@ class KafkaClient:
 
     def __init__(self, bootstrap_servers):
         self.bootstrap_servers = bootstrap_servers
-        self._producer = _build_producer(bootstrap_servers)
+        self._producer = build_producer(bootstrap_servers)
         self._pending: dict[str, tuple[threading.Event, dict | None]] = {}
         self._pending_lock = threading.Lock()
         self._start_response_consumer()

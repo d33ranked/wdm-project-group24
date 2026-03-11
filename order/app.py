@@ -7,7 +7,6 @@ import uuid
 import random
 import logging
 import threading
-from collections import defaultdict
 
 from flask import Flask, jsonify, abort, request, Response, g
 

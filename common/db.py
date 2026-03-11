@@ -8,6 +8,8 @@ import psycopg2.pool
 from time import perf_counter
 from flask import g
 
+logger = logging.getLogger(__name__)
+
 
 def create_conn_pool(service_name, retries=10, delay=2):
     for attempt in range(retries):
@@ -24,8 +26,8 @@ def create_conn_pool(service_name, retries=10, delay=2):
             return pool
         except psycopg2.OperationalError:
             if attempt < retries - 1:
-                print(f"{service_name}: PostgreSQL not ready, retrying in {delay}s... "
-                      f"(attempt {attempt + 1}/{retries})")
+                logger.warning("%s: PostgreSQL not ready, retrying in %ds... (attempt %d/%d)",
+                               service_name, delay, attempt + 1, retries)
                 time.sleep(delay)
             else:
                 raise
@@ -40,7 +42,7 @@ def setup_flask_lifecycle(app, conn_pool, service_name):
     @app.after_request
     def _after(response):
         duration = perf_counter() - g.start_time
-        print(f"{service_name}: Request took {duration:.7f} seconds")
+        logger.debug("%s: Request took %.7f seconds", service_name, duration)
         return response
 
     @app.teardown_request

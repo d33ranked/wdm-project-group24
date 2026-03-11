@@ -220,6 +220,7 @@ def collect_tests(module_name: str):
 
 def run_suite(label: str, tests: list):
     """Run a list of (name, func) test pairs; user presses Enter between them."""
+    global _fail_count
     if not tests:
         sep = "=" * LINE_WIDTH
         print(f"\n{sep}")
@@ -247,7 +248,6 @@ def run_suite(label: str, tests: list):
             func()
         except Exception as e:
             print(f"    \033[91m[ERROR]\033[0m {e}")
-            global _fail_count
             _fail_count += 1
 
         _, f = get_counts()

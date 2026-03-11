@@ -4,6 +4,7 @@ import os
 import json
 import uuid
 import time
+import logging
 from collections import defaultdict
 from time import perf_counter
 
@@ -11,6 +12,7 @@ import requests
 from flask import g, abort, Response
 
 GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://nginx:80")
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +26,7 @@ def send_post_request(url, idempotency_key=None, max_retries=7):
         try:
             response = requests.post(url, headers=headers, timeout=5)
             if response.status_code < 500:
-                print(f"ORDER: POST took {perf_counter() - start:.7f}s")
+                logger.debug("ORDER: POST took %.7fs", perf_counter() - start)
                 return response
         except requests.exceptions.RequestException:
             if attempt == max_retries:
@@ -38,7 +40,7 @@ def send_get_request(url):
     try:
         start = perf_counter()
         response = requests.get(url, timeout=5)
-        print(f"ORDER: GET took {perf_counter() - start:.7f}s")
+        logger.debug("ORDER: GET took %.7fs", perf_counter() - start)
         return response
     except requests.exceptions.RequestException:
         abort(400, "Requests error")
@@ -181,37 +183,35 @@ def checkout_tpc(order_id):
 def recovery_tpc(conn_pool, logger):
     conn = conn_pool.getconn()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost "
-            "FROM transaction_log WHERE status NOT IN ('committed', 'aborted')"
-        )
-        rows = cur.fetchall()
-        if not rows:
-            cur.close()
-            logger.info("RECOVERY: No incomplete transactions found")
-            return
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost "
+                "FROM transaction_log WHERE status NOT IN ('committed', 'aborted')"
+            )
+            rows = cur.fetchall()
+            if not rows:
+                logger.info("RECOVERY: No incomplete transactions found")
+                return
 
-        for (txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost) in rows:
-            if prepared_stock is None:
-                prepared_stock = []
-            elif isinstance(prepared_stock, str):
-                try:
-                    prepared_stock = json.loads(prepared_stock) if prepared_stock else []
-                except (TypeError, ValueError):
+            for (txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost) in rows:
+                if prepared_stock is None:
                     prepared_stock = []
+                elif isinstance(prepared_stock, str):
+                    try:
+                        prepared_stock = json.loads(prepared_stock) if prepared_stock else []
+                    except (TypeError, ValueError):
+                        prepared_stock = []
 
-            logger.warning(f"RECOVERY: txn={txn_id}, status={status}")
+                logger.warning("RECOVERY: txn=%s, status=%s", txn_id, status)
 
-            if status in ("started", "preparing_stock", "preparing_payment", "aborting"):
-                abort_tpc(txn_id, prepared_stock, prepared_payment)
-                cur.execute("UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s", (txn_id,))
-                conn.commit()
-            elif status == "committing":
-                commit_tpc(txn_id, prepared_stock, prepared_payment)
-                cur.execute("UPDATE orders SET paid = TRUE WHERE id = %s", (order_id,))
-                cur.execute("UPDATE transaction_log SET status = 'committed' WHERE txn_id = %s", (txn_id,))
-                conn.commit()
-        cur.close()
+                if status in ("started", "preparing_stock", "preparing_payment", "aborting"):
+                    abort_tpc(txn_id, prepared_stock, prepared_payment)
+                    cur.execute("UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s", (txn_id,))
+                    conn.commit()
+                elif status == "committing":
+                    commit_tpc(txn_id, prepared_stock, prepared_payment)
+                    cur.execute("UPDATE orders SET paid = TRUE WHERE id = %s", (order_id,))
+                    cur.execute("UPDATE transaction_log SET status = 'committed' WHERE txn_id = %s", (txn_id,))
+                    conn.commit()
     finally:
         conn_pool.putconn(conn)

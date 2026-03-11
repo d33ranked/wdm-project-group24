@@ -58,22 +58,20 @@ def recovery(conn_pool, logger):
     """Auto-Abort Prepared Transactions Older Than 5 Minutes."""
     conn = conn_pool.getconn()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT txn_id, item_id, quantity FROM prepared_transactions "
-            "WHERE created_at < NOW() - INTERVAL '5 minutes'"
-        )
-        rows = cur.fetchall()
-        if not rows:
-            cur.close()
-            logger.info("RECOVERY: No stale prepared transactions found")
-            return
-        for txn_id, item_id, quantity in rows:
-            logger.warning(f"RECOVERY: Aborting stale txn={txn_id}, item={item_id}")
-            cur.execute("SELECT stock FROM items WHERE id = %s FOR UPDATE", (item_id,))
-            cur.execute("UPDATE items SET stock = stock + %s WHERE id = %s", (quantity, item_id))
-            cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s AND item_id = %s", (txn_id, item_id))
-            conn.commit()
-        cur.close()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT txn_id, item_id, quantity FROM prepared_transactions "
+                "WHERE created_at < NOW() - INTERVAL '5 minutes'"
+            )
+            rows = cur.fetchall()
+            if not rows:
+                logger.info("RECOVERY: No stale prepared transactions found")
+                return
+            for txn_id, item_id, quantity in rows:
+                logger.warning("RECOVERY: Aborting stale txn=%s, item=%s", txn_id, item_id)
+                cur.execute("SELECT stock FROM items WHERE id = %s FOR UPDATE", (item_id,))
+                cur.execute("UPDATE items SET stock = stock + %s WHERE id = %s", (quantity, item_id))
+                cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s AND item_id = %s", (txn_id, item_id))
+                conn.commit()
     finally:
         conn_pool.putconn(conn)

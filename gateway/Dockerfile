@@ -5,6 +5,7 @@ WORKDIR /app
 COPY gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY common/ ./common/
 COPY gateway/app.py .
 
 EXPOSE 8000
