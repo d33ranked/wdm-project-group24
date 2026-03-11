@@ -63,20 +63,6 @@ def close_db_connection():
 atexit.register(close_db_connection)
 
 
-@app.get("/health")
-def health():
-    """Health check endpoint that verifies database connectivity."""
-    try:
-        conn = conn_pool.getconn()
-        cur = conn.cursor()
-        cur.execute("SELECT 1")
-        cur.close()
-        conn_pool.putconn(conn)
-        return jsonify({"status": "healthy", "primary": conn_pool.current_primary})
-    except Exception as e:
-        return jsonify({"status": "unhealthy", "error": str(e)}), 503
-
-
 def get_order_from_db(order_id: str):
     cur = g.conn.cursor()
     cur.execute(
