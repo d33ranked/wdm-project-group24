@@ -59,6 +59,15 @@ _conn_pool = None
 _pending_price_lookups: dict[str, tuple[threading.Event, dict | None]] = {}
 _pending_price_lookups_lock = threading.Lock()
 
+# Wall-clock start times for in-flight sagas, keyed by saga_id.
+_saga_start_times: dict[str, float] = {}
+
+
+def _log_saga_duration(saga_id: str, final_state: str) -> None:
+    start = _saga_start_times.pop(saga_id, None)
+    if start is not None:
+        print(f"[order] SAGA {saga_id} finished [{final_state}] in {(time.perf_counter() - start) * 1000:.2f}ms", flush=True)
+
 
 def init(conn_pool, gateway_kafka, internal_kafka):
     global _gateway_producer, _internal_producer, _conn_pool
@@ -190,6 +199,8 @@ def handle_checkout_saga(conn, order_id, headers):
     except Exception:
         conn.rollback()
         raise
+
+    _saga_start_times[saga_id] = time.perf_counter()
 
     # Publish subtract_batch To Stock
     batch_items = [{"item_id": iid, "amount": qty} for iid, qty in items_quantities.items()]
@@ -326,6 +337,7 @@ def _on_stock_response(conn, saga, response):
         error = (response.get("body") or {}).get("error", "Stock subtraction failed")
         advance_saga(conn, saga["id"], SagaState.STOCK_FAILED)
         conn.commit()
+        _log_saga_duration(saga["id"], SagaState.STOCK_FAILED)
         _publish_gateway_response(saga["original_correlation_id"], 400, {"error": error})
 
 
@@ -341,6 +353,7 @@ def _on_payment_response(conn, saga, response):
             logger.critical("SAGA INCONSISTENCY: payment committed but order %s not marked paid", saga["order_id"])
             conn.rollback()
             raise
+        _log_saga_duration(saga["id"], SagaState.COMPLETED)
         _publish_gateway_response(saga["original_correlation_id"], 200, "Checkout successful")
     else:
         # Payment Failed -> Compensate Stock
@@ -363,11 +376,13 @@ def _on_rollback_response(conn, saga, response):
     if response.get("status_code") == 200:
         advance_saga(conn, saga["id"], SagaState.ROLLED_BACK)
         conn.commit()
+        _log_saga_duration(saga["id"], SagaState.ROLLED_BACK)
         _publish_gateway_response(saga["original_correlation_id"], 400, {"error": "User has insufficient credit"})
     else:
         logger.critical("SAGA INCONSISTENCY: stock rollback failed. saga_id=%s", saga["id"])
         advance_saga(conn, saga["id"], SagaState.ROLLBACK_FAILED)
         conn.commit()
+        _log_saga_duration(saga["id"], SagaState.ROLLBACK_FAILED)
         _publish_gateway_response(saga["original_correlation_id"], 500,
                                   {"error": "Checkout failed and rollback encountered an error."})
 
