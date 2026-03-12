@@ -33,29 +33,27 @@ setup_flask_lifecycle(app, conn_pool, "ORDER")
 @app.post("/create/<user_id>")
 def create_order(user_id: str):
     key = str(uuid.uuid4())
-    cur = g.conn.cursor()
-    cur.execute(
-        "INSERT INTO orders (id, paid, items, user_id, total_cost) VALUES (%s, %s, %s, %s, %s)",
-        (key, False, json.dumps([]), user_id, 0),
-    )
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO orders (id, paid, items, user_id, total_cost) VALUES (%s, %s, %s, %s, %s)",
+            (key, False, json.dumps([]), user_id, 0),
+        )
     return jsonify({"order_id": key})
 
 
 @app.post("/batch_init/<n>/<n_items>/<n_users>/<item_price>")
 def batch_init(n: int, n_items: int, n_users: int, item_price: int):
     n, n_items, n_users, item_price = int(n), int(n_items), int(n_users), int(item_price)
-    cur = g.conn.cursor()
-    for i in range(n):
-        uid = str(random.randint(0, n_users - 1))
-        i1, i2 = str(random.randint(0, n_items - 1)), str(random.randint(0, n_items - 1))
-        cur.execute(
-            "INSERT INTO orders (id, paid, items, user_id, total_cost) VALUES (%s, %s, %s, %s, %s) "
-            "ON CONFLICT (id) DO UPDATE SET paid = EXCLUDED.paid, items = EXCLUDED.items, "
-            "user_id = EXCLUDED.user_id, total_cost = EXCLUDED.total_cost",
-            (str(i), False, json.dumps([[i1, 1], [i2, 1]]), uid, 2 * item_price),
-        )
-    cur.close()
+    with g.conn.cursor() as cur:
+        for i in range(n):
+            uid = str(random.randint(0, n_users - 1))
+            i1, i2 = str(random.randint(0, n_items - 1)), str(random.randint(0, n_items - 1))
+            cur.execute(
+                "INSERT INTO orders (id, paid, items, user_id, total_cost) VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET paid = EXCLUDED.paid, items = EXCLUDED.items, "
+                "user_id = EXCLUDED.user_id, total_cost = EXCLUDED.total_cost",
+                (str(i), False, json.dumps([[i1, 1], [i2, 1]]), uid, 2 * item_price),
+            )
     return jsonify({"msg": "Batch init for orders successful"})
 
 
@@ -79,18 +77,16 @@ def add_item(order_id: str, item_id: str, quantity: int):
         abort(400, f"Item: {item_id} does not exist!")
     item_price = stock_reply.json()["price"]
 
-    cur = g.conn.cursor()
-    cur.execute("SELECT items, total_cost FROM orders WHERE id = %s FOR UPDATE", (order_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.close()
-        abort(400, f"Order: {order_id} not found!")
-    items_list, total_cost = row
-    items_list.append([item_id, quantity])
-    total_cost += quantity * item_price
-    cur.execute("UPDATE orders SET items = %s, total_cost = %s WHERE id = %s",
-                (json.dumps(items_list), total_cost, order_id))
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("SELECT items, total_cost FROM orders WHERE id = %s FOR UPDATE", (order_id,))
+        row = cur.fetchone()
+        if row is None:
+            abort(400, f"Order: {order_id} not found!")
+        items_list, total_cost = row
+        items_list.append([item_id, quantity])
+        total_cost += quantity * item_price
+        cur.execute("UPDATE orders SET items = %s, total_cost = %s WHERE id = %s",
+                    (json.dumps(items_list), total_cost, order_id))
     return Response(f"Item: {item_id} added to: {order_id} price updated to: {total_cost}", status=200)
 
 

@@ -84,93 +84,88 @@ def abort_tpc(txn_id, prepared_stock, prepared_payment):
 
 def checkout_tpc(order_id):
     conn = g.conn
-    cur = conn.cursor()
     txn_id = str(uuid.uuid4())
 
-    # Step 1: Lock Order Row
-    cur.execute("SELECT paid, items, user_id, total_cost FROM orders WHERE id = %s FOR UPDATE", (order_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.close()
-        abort(400, f"Order: {order_id} not found!")
-    paid, items, user_id, total_cost = row
+    with conn.cursor() as cur:
+        # Step 1: Lock Order Row
+        cur.execute("SELECT paid, items, user_id, total_cost FROM orders WHERE id = %s FOR UPDATE", (order_id,))
+        row = cur.fetchone()
+        if row is None:
+            abort(400, f"Order: {order_id} not found!")
+        paid, items, user_id, total_cost = row
 
-    if paid:
-        cur.close()
-        return Response("Order is already paid for!", status=200)
+        if paid:
+            return Response("Order is already paid for!", status=200)
 
-    items_quantities = defaultdict(int)
-    for item_id, qty in items:
-        items_quantities[item_id] += qty
-    if not items_quantities:
-        cur.close()
-        return Response("Order has no items.", status=200)
+        items_quantities = defaultdict(int)
+        for item_id, qty in items:
+            items_quantities[item_id] += qty
+        if not items_quantities:
+            return Response("Order has no items.", status=200)
 
-    # Step 2: Create Transaction Log Entry
-    cur.execute(
-        "INSERT INTO transaction_log (txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (txn_id, order_id, "started", json.dumps([]), False, user_id, total_cost),
-    )
-    conn.commit()
-
-    # Step 3: Prepare Each Stock Item
-    cur.execute("UPDATE transaction_log SET status = 'preparing_stock' WHERE txn_id = %s", (txn_id,))
-    conn.commit()
-
-    prepared_stock = []
-    for item_id, qty in sorted(items_quantities.items()):
-        reply = send_post_request(
-            f"{GATEWAY_URL}/stock/prepare/{txn_id}/{item_id}/{qty}",
-            idempotency_key=f"{txn_id}:stock:prepare:{item_id}",
+        # Step 2: Create Transaction Log Entry
+        cur.execute(
+            "INSERT INTO transaction_log (txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (txn_id, order_id, "started", json.dumps([]), False, user_id, total_cost),
         )
-        if reply.status_code != 200:
-            # Stock Voted NO — Abort All
+        conn.commit()
+
+        # Step 3: Prepare Each Stock Item
+        cur.execute("UPDATE transaction_log SET status = 'preparing_stock' WHERE txn_id = %s", (txn_id,))
+        conn.commit()
+
+        prepared_stock = []
+        for item_id, qty in sorted(items_quantities.items()):
+            reply = send_post_request(
+                f"{GATEWAY_URL}/stock/prepare/{txn_id}/{item_id}/{qty}",
+                idempotency_key=f"{txn_id}:stock:prepare:{item_id}",
+            )
+            if reply.status_code != 200:
+                # Stock Voted NO — Abort All
+                cur.execute("UPDATE transaction_log SET status = 'aborting' WHERE txn_id = %s", (txn_id,))
+                conn.commit()
+                abort_tpc(txn_id, prepared_stock, False)
+                cur.execute("UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s", (txn_id,))
+                conn.commit()
+                abort(400, "Failed to PREPARE stock")
+
+            # Persist Prepared Item For Crash Recovery
+            prepared_stock.append([item_id, qty])
+            cur.execute("UPDATE transaction_log SET prepared_stock = %s WHERE txn_id = %s",
+                        (json.dumps(prepared_stock), txn_id))
+            conn.commit()
+
+        # Step 4: Prepare Payment
+        cur.execute("UPDATE transaction_log SET status = 'preparing_payment' WHERE txn_id = %s", (txn_id,))
+        conn.commit()
+
+        payment_reply = send_post_request(
+            f"{GATEWAY_URL}/payment/prepare/{txn_id}/{user_id}/{total_cost}",
+            idempotency_key=f"{txn_id}:payment:prepare",
+        )
+        if payment_reply.status_code != 200:
+            # Payment Voted NO — Abort All
             cur.execute("UPDATE transaction_log SET status = 'aborting' WHERE txn_id = %s", (txn_id,))
             conn.commit()
             abort_tpc(txn_id, prepared_stock, False)
             cur.execute("UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s", (txn_id,))
             conn.commit()
-            cur.close()
-            abort(400, "Failed to PREPARE stock")
+            abort(400, "Failed to PREPARE payment")
 
-        # Persist Prepared Item For Crash Recovery
-        prepared_stock.append([item_id, qty])
-        cur.execute("UPDATE transaction_log SET prepared_stock = %s WHERE txn_id = %s",
-                    (json.dumps(prepared_stock), txn_id))
+        cur.execute("UPDATE transaction_log SET prepared_payment = TRUE WHERE txn_id = %s", (txn_id,))
         conn.commit()
 
-    # Step 4: Prepare Payment
-    cur.execute("UPDATE transaction_log SET status = 'preparing_payment' WHERE txn_id = %s", (txn_id,))
-    conn.commit()
-
-    payment_reply = send_post_request(
-        f"{GATEWAY_URL}/payment/prepare/{txn_id}/{user_id}/{total_cost}",
-        idempotency_key=f"{txn_id}:payment:prepare",
-    )
-    if payment_reply.status_code != 200:
-        # Payment Voted NO — Abort All
-        cur.execute("UPDATE transaction_log SET status = 'aborting' WHERE txn_id = %s", (txn_id,))
+        # Step 5: Commit (Decision Is Final Once 'committing' Is Persisted)
+        cur.execute("UPDATE transaction_log SET status = 'committing' WHERE txn_id = %s", (txn_id,))
         conn.commit()
-        abort_tpc(txn_id, prepared_stock, False)
-        cur.execute("UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s", (txn_id,))
+
+        commit_tpc(txn_id, prepared_stock, True)
+
+        cur.execute("UPDATE orders SET paid = TRUE WHERE id = %s", (order_id,))
+        cur.execute("UPDATE transaction_log SET status = 'committed' WHERE txn_id = %s", (txn_id,))
         conn.commit()
-        cur.close()
-        abort(400, "Failed to PREPARE payment")
 
-    cur.execute("UPDATE transaction_log SET prepared_payment = TRUE WHERE txn_id = %s", (txn_id,))
-    conn.commit()
-
-    # Step 5: Commit (Decision Is Final Once 'committing' Is Persisted)
-    cur.execute("UPDATE transaction_log SET status = 'committing' WHERE txn_id = %s", (txn_id,))
-    conn.commit()
-
-    commit_tpc(txn_id, prepared_stock, True)
-
-    cur.execute("UPDATE orders SET paid = TRUE WHERE id = %s", (order_id,))
-    cur.execute("UPDATE transaction_log SET status = 'committed' WHERE txn_id = %s", (txn_id,))
-    conn.commit()
-    cur.close()
     return Response("Checkout successful", status=200)
 
 

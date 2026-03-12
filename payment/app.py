@@ -29,32 +29,29 @@ setup_flask_lifecycle(app, conn_pool, "PAYMENT")
 @app.post("/create_user")
 def create_user():
     key = str(uuid.uuid4())
-    cur = g.conn.cursor()
-    cur.execute("INSERT INTO users (id, credit) VALUES (%s, %s)", (key, 0))
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("INSERT INTO users (id, credit) VALUES (%s, %s)", (key, 0))
     return jsonify({"user_id": key})
 
 
 @app.post("/batch_init/<n>/<starting_money>")
 def batch_init_users(n: int, starting_money: int):
     n, starting_money = int(n), int(starting_money)
-    cur = g.conn.cursor()
-    for i in range(n):
-        cur.execute(
-            "INSERT INTO users (id, credit) VALUES (%s, %s) "
-            "ON CONFLICT (id) DO UPDATE SET credit = EXCLUDED.credit",
-            (str(i), starting_money),
-        )
-    cur.close()
+    with g.conn.cursor() as cur:
+        for i in range(n):
+            cur.execute(
+                "INSERT INTO users (id, credit) VALUES (%s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET credit = EXCLUDED.credit",
+                (str(i), starting_money),
+            )
     return jsonify({"msg": "Batch init for users successful"})
 
 
 @app.get("/find_user/<user_id>")
 def find_user(user_id: str):
-    cur = g.conn.cursor()
-    cur.execute("SELECT credit FROM users WHERE id = %s", (user_id,))
-    row = cur.fetchone()
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("SELECT credit FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
     if row is None:
         abort(400, f"User: {user_id} not found!")
     return jsonify({"user_id": user_id, "credit": row[0]})
@@ -67,15 +64,13 @@ def add_credit(user_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    cur = g.conn.cursor()
-    cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.close()
-        abort(400, f"User: {user_id} not found!")
-    cur.execute("UPDATE users SET credit = credit + %s WHERE id = %s RETURNING credit", (int(amount), user_id))
-    new_credit = cur.fetchone()[0]
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+        row = cur.fetchone()
+        if row is None:
+            abort(400, f"User: {user_id} not found!")
+        cur.execute("UPDATE users SET credit = credit + %s WHERE id = %s RETURNING credit", (int(amount), user_id))
+        new_credit = cur.fetchone()[0]
 
     body = f"User: {user_id} credit updated to: {new_credit}"
     save_idempotency_http(g.conn, idem_key, 200, body)
@@ -89,18 +84,15 @@ def remove_credit(user_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    cur = g.conn.cursor()
-    cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.close()
-        abort(400, f"User: {user_id} not found!")
-    if row[0] - int(amount) < 0:
-        cur.close()
-        abort(400, f"User: {user_id} credit cannot get reduced below zero!")
-    cur.execute("UPDATE users SET credit = credit - %s WHERE id = %s RETURNING credit", (int(amount), user_id))
-    new_credit = cur.fetchone()[0]
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("SELECT credit FROM users WHERE id = %s FOR UPDATE", (user_id,))
+        row = cur.fetchone()
+        if row is None:
+            abort(400, f"User: {user_id} not found!")
+        if row[0] - int(amount) < 0:
+            abort(400, f"User: {user_id} credit cannot get reduced below zero!")
+        cur.execute("UPDATE users SET credit = credit - %s WHERE id = %s RETURNING credit", (int(amount), user_id))
+        new_credit = cur.fetchone()[0]
 
     body = f"User: {user_id} credit updated to: {new_credit}"
     save_idempotency_http(g.conn, idem_key, 200, body)

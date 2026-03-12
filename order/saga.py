@@ -103,53 +103,48 @@ def checkout_saga_http(order_id, conn):
     from flask import abort, Response
 
     transaction_id = str(uuid.uuid4())
-    cur = conn.cursor()
 
-    # Step 1: Lock Order Row
-    cur.execute("SELECT paid, items, user_id, total_cost FROM orders WHERE id = %s FOR UPDATE", (order_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.close()
-        abort(400, f"Order: {order_id} not found!")
-    paid, items, user_id, total_cost = row
+    with conn.cursor() as cur:
+        # Step 1: Lock Order Row
+        cur.execute("SELECT paid, items, user_id, total_cost FROM orders WHERE id = %s FOR UPDATE", (order_id,))
+        row = cur.fetchone()
+        if row is None:
+            abort(400, f"Order: {order_id} not found!")
+        paid, items, user_id, total_cost = row
 
-    if paid:
-        cur.close()
-        return Response("Order is already paid for!", status=200)
+        if paid:
+            return Response("Order is already paid for!", status=200)
 
-    items_quantities: dict[str, int] = defaultdict(int)
-    for item_id, quantity in items:
-        items_quantities[item_id] += quantity
-    if not items_quantities:
-        cur.close()
-        return Response("Order has no items.", status=200)
+        items_quantities: dict[str, int] = defaultdict(int)
+        for item_id, quantity in items:
+            items_quantities[item_id] += quantity
+        if not items_quantities:
+            return Response("Order has no items.", status=200)
 
-    # Step 2: Subtract Stock Per Item (Rollback On Failure)
-    removed_items = []
-    for item_id, quantity in items_quantities.items():
-        reply = send_post_request(
-            f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}",
-            idempotency_key=f"{transaction_id}:stock:subtract:{item_id}",
+        # Step 2: Subtract Stock Per Item (Rollback On Failure)
+        removed_items = []
+        for item_id, quantity in items_quantities.items():
+            reply = send_post_request(
+                f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}",
+                idempotency_key=f"{transaction_id}:stock:subtract:{item_id}",
+            )
+            if reply.status_code != 200:
+                rollback_stock(removed_items, transaction_id)
+                abort(400, f"Out of stock on item_id: {item_id}")
+            removed_items.append((item_id, quantity))
+
+        # Step 3: Charge Payment (Rollback Stock On Failure)
+        user_reply = send_post_request(
+            f"{GATEWAY_URL}/payment/pay/{user_id}/{total_cost}",
+            idempotency_key=f"{transaction_id}:payment:pay",
         )
-        if reply.status_code != 200:
+        if user_reply.status_code != 200:
             rollback_stock(removed_items, transaction_id)
-            cur.close()
-            abort(400, f"Out of stock on item_id: {item_id}")
-        removed_items.append((item_id, quantity))
+            abort(400, "User out of credit")
 
-    # Step 3: Charge Payment (Rollback Stock On Failure)
-    user_reply = send_post_request(
-        f"{GATEWAY_URL}/payment/pay/{user_id}/{total_cost}",
-        idempotency_key=f"{transaction_id}:payment:pay",
-    )
-    if user_reply.status_code != 200:
-        rollback_stock(removed_items, transaction_id)
-        cur.close()
-        abort(400, "User out of credit")
+        # Step 4: Mark Paid
+        cur.execute("UPDATE orders SET paid = TRUE WHERE id = %s", (order_id,))
 
-    # Step 4: Mark Paid
-    cur.execute("UPDATE orders SET paid = TRUE WHERE id = %s", (order_id,))
-    cur.close()
     return Response("Checkout successful", status=200)
 
 

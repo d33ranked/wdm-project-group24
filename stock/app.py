@@ -29,32 +29,29 @@ setup_flask_lifecycle(app, conn_pool, "STOCK")
 @app.post("/item/create/<price>")
 def create_item(price: int):
     key = str(uuid.uuid4())
-    cur = g.conn.cursor()
-    cur.execute("INSERT INTO items (id, stock, price) VALUES (%s, %s, %s)", (key, 0, int(price)))
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("INSERT INTO items (id, stock, price) VALUES (%s, %s, %s)", (key, 0, int(price)))
     return jsonify({"item_id": key})
 
 
 @app.post("/batch_init/<n>/<starting_stock>/<item_price>")
 def batch_init_users(n: int, starting_stock: int, item_price: int):
     n, starting_stock, item_price = int(n), int(starting_stock), int(item_price)
-    cur = g.conn.cursor()
-    for i in range(n):
-        cur.execute(
-            "INSERT INTO items (id, stock, price) VALUES (%s, %s, %s) "
-            "ON CONFLICT (id) DO UPDATE SET stock = EXCLUDED.stock, price = EXCLUDED.price",
-            (str(i), starting_stock, item_price),
-        )
-    cur.close()
+    with g.conn.cursor() as cur:
+        for i in range(n):
+            cur.execute(
+                "INSERT INTO items (id, stock, price) VALUES (%s, %s, %s) "
+                "ON CONFLICT (id) DO UPDATE SET stock = EXCLUDED.stock, price = EXCLUDED.price",
+                (str(i), starting_stock, item_price),
+            )
     return jsonify({"msg": "Batch init for stock successful"})
 
 
 @app.get("/find/<item_id>")
 def find_item(item_id: str):
-    cur = g.conn.cursor()
-    cur.execute("SELECT stock, price FROM items WHERE id = %s", (item_id,))
-    row = cur.fetchone()
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("SELECT stock, price FROM items WHERE id = %s", (item_id,))
+        row = cur.fetchone()
     if row is None:
         abort(400, f"Item: {item_id} not found!")
     return jsonify({"stock": row[0], "price": row[1]})
@@ -67,15 +64,13 @@ def add_stock(item_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    cur = g.conn.cursor()
-    cur.execute("SELECT stock FROM items WHERE id = %s FOR UPDATE", (item_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.close()
-        abort(400, f"Item: {item_id} not found!")
-    cur.execute("UPDATE items SET stock = stock + %s WHERE id = %s RETURNING stock", (int(amount), item_id))
-    new_stock = cur.fetchone()[0]
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("SELECT stock FROM items WHERE id = %s FOR UPDATE", (item_id,))
+        row = cur.fetchone()
+        if row is None:
+            abort(400, f"Item: {item_id} not found!")
+        cur.execute("UPDATE items SET stock = stock + %s WHERE id = %s RETURNING stock", (int(amount), item_id))
+        new_stock = cur.fetchone()[0]
 
     body = f"Item: {item_id} stock updated to: {new_stock}"
     save_idempotency_http(g.conn, idem_key, 200, body)
@@ -89,18 +84,15 @@ def remove_stock(item_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    cur = g.conn.cursor()
-    cur.execute("SELECT stock FROM items WHERE id = %s FOR UPDATE", (item_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.close()
-        abort(400, f"Item: {item_id} not found!")
-    if row[0] - int(amount) < 0:
-        cur.close()
-        abort(400, f"Item: {item_id} stock cannot get reduced below zero!")
-    cur.execute("UPDATE items SET stock = stock - %s WHERE id = %s RETURNING stock", (int(amount), item_id))
-    new_stock = cur.fetchone()[0]
-    cur.close()
+    with g.conn.cursor() as cur:
+        cur.execute("SELECT stock FROM items WHERE id = %s FOR UPDATE", (item_id,))
+        row = cur.fetchone()
+        if row is None:
+            abort(400, f"Item: {item_id} not found!")
+        if row[0] - int(amount) < 0:
+            abort(400, f"Item: {item_id} stock cannot get reduced below zero!")
+        cur.execute("UPDATE items SET stock = stock - %s WHERE id = %s RETURNING stock", (int(amount), item_id))
+        new_stock = cur.fetchone()[0]
 
     body = f"Item: {item_id} stock updated to: {new_stock}"
     save_idempotency_http(g.conn, idem_key, 200, body)
