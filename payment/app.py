@@ -189,10 +189,18 @@ def prepare_transaction(txn_id: str, user_id: str, amount: int):
     cur.execute(
         "UPDATE users SET credit = credit - %s WHERE id = %s", (amount, user_id)
     )
-    cur.execute(
-        "INSERT INTO prepared_transactions (txn_id, user_id, amount) VALUES (%s, %s, %s)",
-        (txn_id, user_id, amount),
-    )
+    try:
+        cur.execute(
+            "INSERT INTO prepared_transactions (txn_id, user_id, amount) VALUES (%s, %s, %s)",
+            (txn_id, user_id, amount),
+        )
+    except psycopg2.errors.UniqueViolation:
+        # Row already exists — this txn was prepared before a failover caused a
+        # retry. The deduction above was also rolled back by psycopg2 (the
+        # transaction is now aborted), so just return success — the original
+        # prepare already committed on the primary and was replicated.
+        cur.close()
+        return Response("Transaction already prepared", status=200)
     cur.close()
     return Response("Transaction prepared", status=200)
 

@@ -335,11 +335,21 @@ class HAConnectionPool:
     def getconn(self):
         """
         Get a connection from the pool, running a SELECT 1 probe.
-        Triggers a blocking failover if the probe fails.
+        If the pool is exhausted, yields and retries every 0.1s for up to 30s
+        rather than immediately failing.
+        Triggers a blocking failover if the connection probe fails.
         """
         with self._lock:
+            # Wait for a connection to become available if pool is exhausted.
+            for attempt in range(300):   # 300 x 0.1s = 30s max wait
+                try:
+                    conn = self._pool.getconn()
+                    break
+                except psycopg2.pool.PoolError:
+                    if attempt == 299:
+                        raise
+                    gevent.sleep(0.1)
             try:
-                conn = self._pool.getconn()
                 conn.cursor().execute("SELECT 1")
                 return conn
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
@@ -422,14 +432,13 @@ def _swap_connection(conn_pool: "HAConnectionPool", delay: float):
     if old_conn is not None:
         conn_pool.putconn(old_conn, close=True)
 
-    # Wait for the poller to confirm a primary, or do a blocking failover.
-    if conn_pool._poller_greenlet is not None and not conn_pool._poller_greenlet.dead:
-        # Poller is already running – wait for it (up to 15s).
-        conn_pool._failover_event.wait(timeout=15)
-    else:
-        # No poller yet – start a blocking failover.
-        conn_pool._ensure_poller_running()
-        conn_pool._failover_event.wait(timeout=15)
+    # Always clear the event first so we don't immediately pass through on a
+    # stale set from a previous failover round.
+    conn_pool._failover_event.clear()
+
+    # Ensure the poller is running and wait for it to confirm a primary.
+    conn_pool._ensure_poller_running()
+    conn_pool._failover_event.wait(timeout=15)
 
     gevent.sleep(delay)
     g.conn = conn_pool.getconn()

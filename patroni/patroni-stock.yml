@@ -25,6 +25,7 @@ bootstrap:
         max_replication_slots: 10
         wal_keep_size: 128MB
         synchronous_commit: "on"
+        max_connections: 250
 
   initdb:
     - encoding: UTF8
