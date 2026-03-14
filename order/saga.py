@@ -275,7 +275,14 @@ def route_gateway_message(payload, conn):
             if row is None:
                 return 400, {"error": f"Order {order_id} not found"}
             items_list, total_cost = row
-            items_list.append([item_id, quantity])
+            merged = False
+            for entry in items_list:
+                if entry[0] == item_id:
+                    entry[1] += quantity
+                    merged = True
+                    break
+            if not merged:
+                items_list.append([item_id, quantity])
             total_cost += quantity * item_price
             cur.execute("UPDATE orders SET items = %s, total_cost = %s WHERE id = %s",
                         (json.dumps(items_list), total_cost, order_id))

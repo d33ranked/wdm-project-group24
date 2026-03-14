@@ -38,6 +38,7 @@ services:
     environment:
       - TRANSACTION_MODE=TPC
       - GATEWAY_URL=http://nginx:80
+      - STOCK_SERVICE_URL=http://stock-service:5000
       - KAFKA_BOOTSTRAP_SERVERS=kafka-external:9092
       - INTERNAL_KAFKA_BOOTSTRAP_SERVERS=kafka-internal:9092
     command: gunicorn -k gevent -b 0.0.0.0:5000 -w 4 --timeout 30 --log-level=info app:app

@@ -20,6 +20,7 @@ from db import get_order
 TRANSACTION_MODE = os.environ.get("TRANSACTION_MODE", "TPC")
 GATEWAY_KAFKA = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka-external:9092")
 INTERNAL_KAFKA = os.environ.get("INTERNAL_KAFKA_BOOTSTRAP_SERVERS", "kafka-internal:9092")
+STOCK_SERVICE_URL = os.environ.get("STOCK_SERVICE_URL", "http://stock-service:5000")
 
 app = Flask("order-service")
 logger = logging.getLogger(__name__)
@@ -86,7 +87,7 @@ def find_order(order_id: str):
 @app.post("/addItem/<order_id>/<item_id>/<quantity>")
 def add_item(order_id: str, item_id: str, quantity: int):
     quantity = int(quantity)
-    stock_reply = tpc.send_get_request(f"{tpc.GATEWAY_URL}/stock/find/{item_id}")
+    stock_reply = tpc.send_get_request(f"{STOCK_SERVICE_URL}/find/{item_id}")
     if stock_reply.status_code != 200:
         abort(400, f"Item: {item_id} does not exist!")
     item_price = stock_reply.json()["price"]
@@ -97,7 +98,14 @@ def add_item(order_id: str, item_id: str, quantity: int):
         if row is None:
             abort(400, f"Order: {order_id} not found!")
         items_list, total_cost = row
-        items_list.append([item_id, quantity])
+        merged = False
+        for entry in items_list:
+            if entry[0] == item_id:
+                entry[1] += quantity
+                merged = True
+                break
+        if not merged:
+            items_list.append([item_id, quantity])
         total_cost += quantity * item_price
         cur.execute("UPDATE orders SET items = %s, total_cost = %s WHERE id = %s",
                     (json.dumps(items_list), total_cost, order_id))
