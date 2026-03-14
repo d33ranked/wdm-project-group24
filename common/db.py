@@ -1,5 +1,4 @@
 import os
-import time
 import atexit
 import logging
 
@@ -11,26 +10,17 @@ from flask import g
 logger = logging.getLogger(__name__)
 
 
-def create_conn_pool(service_name, retries=10, delay=2):
-    for attempt in range(retries):
-        try:
-            pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=10, maxconn=100,
-                host=os.environ["POSTGRES_HOST"],
-                port=int(os.environ["POSTGRES_PORT"]),
-                dbname=os.environ["POSTGRES_DB"],
-                user=os.environ["POSTGRES_USER"],
-                password=os.environ["POSTGRES_PASSWORD"],
-            )
-            atexit.register(pool.closeall)
-            return pool
-        except psycopg2.OperationalError:
-            if attempt < retries - 1:
-                logger.warning("%s: PostgreSQL not ready, retrying in %ds... (attempt %d/%d)",
-                               service_name, delay, attempt + 1, retries)
-                time.sleep(delay)
-            else:
-                raise
+def create_conn_pool(service_name):
+    pool = psycopg2.pool.ThreadedConnectionPool(
+        minconn=10, maxconn=100,
+        host=os.environ["POSTGRES_HOST"],
+        port=int(os.environ["POSTGRES_PORT"]),
+        dbname=os.environ["POSTGRES_DB"],
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+    )
+    atexit.register(pool.closeall)
+    return pool
 
 
 def setup_flask_lifecycle(app, conn_pool, service_name):
