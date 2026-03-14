@@ -517,6 +517,52 @@ def test_add_item_idempotency():
 
 
 # ---------------------------------------------------------------------------
+# 16. Multi-Item Checkout Atomic Rollback — One Item Out Of Stock
+# ---------------------------------------------------------------------------
+def test_multi_item_checkout_partial_stock_failure():
+    """Order has 3 items; the second item has 0 stock.
+    Checkout must fail AND all stock levels must stay unchanged —
+    no partial deduction from the items that did have stock."""
+    CREDIT = 1000
+
+    user = json_field(api("POST", "/payment/create_user"), "user_id")
+    api("POST", f"/payment/add_funds/{user}/{CREDIT}")
+
+    item1 = json_field(api("POST", "/stock/item/create/10"), "item_id")
+    api("POST", f"/stock/add/{item1}/5")               # has stock
+
+    item2 = json_field(api("POST", "/stock/item/create/20"), "item_id")
+    # deliberately leave item2 at 0 stock — no add_funds call
+
+    item3 = json_field(api("POST", "/stock/item/create/30"), "item_id")
+    api("POST", f"/stock/add/{item3}/5")               # has stock
+
+    order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
+    api("POST", f"/orders/addItem/{order}/{item1}/2")
+    api("POST", f"/orders/addItem/{order}/{item2}/1")  # will cause the failure
+    api("POST", f"/orders/addItem/{order}/{item3}/1")
+
+    r = api("POST", f"/orders/checkout/{order}")
+    check("Checkout Rejected — Item2 Has 0 Stock, Entire Batch Must Fail",
+          400 <= r.status_code < 500, f"got {r.status_code}")
+
+    s1 = json_field(api("GET", f"/stock/find/{item1}"), "stock")
+    s2 = json_field(api("GET", f"/stock/find/{item2}"), "stock")
+    s3 = json_field(api("GET", f"/stock/find/{item3}"), "stock")
+
+    check("Item1 Stock Still 5 — Not Partially Deducted Despite Having Enough Stock",
+          s1 == 5, f"got {s1}")
+    check("Item2 Stock Still 0 — Confirms It Was The Cause Of Failure",
+          s2 == 0, f"got {s2}")
+    check("Item3 Stock Still 5 — Not Partially Deducted Despite Having Enough Stock",
+          s3 == 5, f"got {s3}")
+
+    balance = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
+    check(f"User Balance Unchanged At {CREDIT} — Not Charged For A Failed Checkout",
+          balance == CREDIT, f"got {balance}")
+
+
+# ---------------------------------------------------------------------------
 # Ordered test list — imported by run.py
 # ---------------------------------------------------------------------------
 TESTS = [
@@ -535,4 +581,5 @@ TESTS = [
     ("Boundary: One Stock Unit Short Of Order Quantity", test_one_stock_short),
     ("GET On Non-Existent Stock, User, And Order IDs", test_find_nonexistent),
     ("addItem Idempotency — Same Key Prevents Duplicate Quantity", test_add_item_idempotency),
+    ("Multi-Item Checkout Atomic Rollback When One Item Is Out Of Stock", test_multi_item_checkout_partial_stock_failure),
 ]
