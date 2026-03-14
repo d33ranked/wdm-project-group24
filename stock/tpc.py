@@ -54,7 +54,7 @@ def init_routes(app):
         return Response("Transaction aborted", status=200)
 
 
-def recovery(conn_pool, logger):
+def recovery(conn_pool):
     """Auto-Abort Prepared Transactions Older Than 5 Minutes."""
     conn = conn_pool.getconn()
     try:
@@ -65,10 +65,10 @@ def recovery(conn_pool, logger):
             )
             rows = cur.fetchall()
             if not rows:
-                logger.info("RECOVERY: No stale prepared transactions found")
+                print("RECOVERY: No stale prepared transactions found", flush=True)
                 return
             for txn_id, item_id, quantity in rows:
-                logger.warning("RECOVERY: Aborting stale txn=%s, item=%s", txn_id, item_id)
+                print(f"RECOVERY: Aborting stale txn={txn_id}, item={item_id}", flush=True)
                 cur.execute("SELECT stock FROM items WHERE id = %s FOR UPDATE", (item_id,))
                 cur.execute("UPDATE items SET stock = stock + %s WHERE id = %s", (quantity, item_id))
                 cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s AND item_id = %s", (txn_id, item_id))

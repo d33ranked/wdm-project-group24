@@ -131,18 +131,18 @@ def health():
 with app.app_context():
     if TRANSACTION_MODE == "TPC":
         try:
-            tpc.recovery_tpc(conn_pool, app.logger)
+            tpc.recovery_tpc(conn_pool)
         except Exception as e:
-            app.logger.warning(f"RECOVERY ORDER: {e}")
+            print(f"RECOVERY ORDER: {e}", flush=True)
 
     elif TRANSACTION_MODE == "SAGA":
         # Single Worker Required — Saga State Machine Needs Consistent In-Memory State
         saga.init(conn_pool, GATEWAY_KAFKA, INTERNAL_KAFKA)
 
         try:
-            saga.recovery_saga(conn_pool, app.logger)
+            saga.recovery_saga(conn_pool)
         except Exception as e:
-            app.logger.warning(f"SAGA RECOVERY ORDER: {e}")
+            print(f"SAGA RECOVERY ORDER: {e}", flush=True)
 
         threading.Thread(
             target=saga.start_gateway_consumer,
@@ -156,7 +156,7 @@ with app.app_context():
             daemon=True, name="internal-consumer",
         ).start()
 
-        app.logger.info("SAGA mode: Kafka consumers started")
+        print("SAGA mode: Kafka consumers started", flush=True)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)

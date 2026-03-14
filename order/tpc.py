@@ -175,7 +175,7 @@ def checkout_tpc(order_id):
 #   committing -> Commit (Decision Was Already Made)
 # ---------------------------------------------------------------------------
 
-def recovery_tpc(conn_pool, logger):
+def recovery_tpc(conn_pool):
     conn = conn_pool.getconn()
     try:
         with conn.cursor() as cur:
@@ -185,7 +185,7 @@ def recovery_tpc(conn_pool, logger):
             )
             rows = cur.fetchall()
             if not rows:
-                logger.info("RECOVERY: No incomplete transactions found")
+                print("RECOVERY: No incomplete transactions found", flush=True)
                 return
 
             for (txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost) in rows:
@@ -197,7 +197,7 @@ def recovery_tpc(conn_pool, logger):
                     except (TypeError, ValueError):
                         prepared_stock = []
 
-                logger.warning("RECOVERY: txn=%s, status=%s", txn_id, status)
+                print(f"RECOVERY: txn={txn_id}, status={status}", flush=True)
 
                 if status in ("started", "preparing_stock", "preparing_payment", "aborting"):
                     abort_tpc(txn_id, prepared_stock, prepared_payment)

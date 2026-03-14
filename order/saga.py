@@ -127,6 +127,7 @@ def handle_checkout_saga(conn, order_id, headers):
         conn.rollback()
         return 200, f"Order {order_id} is already paid for!"
 
+    # Item Aggregation
     items_quantities: dict[str, int] = defaultdict(int)
     for item_id, quantity in order["items"]:
         items_quantities[item_id] += quantity
@@ -135,7 +136,7 @@ def handle_checkout_saga(conn, order_id, headers):
         return 200, "Order has no items."
 
     # Create Saga Record, Persist Before Publishing
-    saga_id = idem_key or str(uuid.uuid4())
+    saga_id = str(uuid.uuid4())
     stock_corr_id = f"{saga_id}:stock:subtract_batch"
 
     try:
@@ -469,7 +470,7 @@ def start_internal_consumer(internal_kafka):
 # Safe Because All Downstream Consumers Are Idempotent.
 # ---------------------------------------------------------------------------
 
-def recovery_saga(conn_pool, logger_):
+def recovery_saga(conn_pool):
     conn = conn_pool.getconn()
     try:
         with conn.cursor() as cur:
@@ -478,11 +479,11 @@ def recovery_saga(conn_pool, logger_):
             rows = cur.fetchall()
 
         if not rows:
-            logger_.info("SAGA RECOVERY: No incomplete sagas found")
+            print("SAGA RECOVERY: No incomplete sagas found", flush=True)
             return
 
         for saga_id, order_id, state, items_quantities in rows:
-            logger_.warning("SAGA RECOVERY: saga=%s state=%s order=%s", saga_id, state, order_id)
+            print(f"SAGA RECOVERY: saga={saga_id} state={state} order={order_id}", flush=True)
 
             if isinstance(items_quantities, str):
                 items_quantities = json.loads(items_quantities)
@@ -497,7 +498,7 @@ def recovery_saga(conn_pool, logger_):
                 try:
                     order = get_order(conn, order_id)
                 except ValueError:
-                    logger_.error("SAGA RECOVERY: Order %s not found, skipping saga %s", order_id, saga_id)
+                    print(f"SAGA RECOVERY: Order {order_id} not found, skipping saga {saga_id}", flush=True)
                     continue
                 corr_id = f"{saga_id}:payment:pay"
                 _publish_internal_request(INTERNAL_PAYMENT_TOPIC, corr_id, "POST",
@@ -509,6 +510,6 @@ def recovery_saga(conn_pool, logger_):
                 _publish_internal_request(INTERNAL_STOCK_TOPIC, corr_id, "POST", "/add_batch",
                                           body={"items": batch_items}, headers={"Idempotency-Key": corr_id})
 
-            logger_.info("SAGA RECOVERY: re-published for saga=%s state=%s", saga_id, state)
+            print(f"SAGA RECOVERY: re-published for saga={saga_id} state={state}", flush=True)
     finally:
         conn_pool.putconn(conn)
