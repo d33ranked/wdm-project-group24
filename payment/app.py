@@ -59,6 +59,8 @@ def find_user(user_id: str):
 
 @app.post("/add_funds/<user_id>/<amount>")
 def add_credit(user_id: str, amount: int):
+    if int(amount) <= 0:
+        abort(400, "Amount must be positive!")
     idem_key = request.headers.get("Idempotency-Key")
     cached = check_idempotency_http(g.conn, idem_key)
     if cached is not None:
@@ -79,6 +81,8 @@ def add_credit(user_id: str, amount: int):
 
 @app.post("/pay/<user_id>/<amount>")
 def remove_credit(user_id: str, amount: int):
+    if int(amount) <= 0:
+        abort(400, "Amount must be positive!")
     idem_key = request.headers.get("Idempotency-Key")
     cached = check_idempotency_http(g.conn, idem_key)
     if cached is not None:

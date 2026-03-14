@@ -46,6 +46,8 @@ def route_kafka_message(payload, conn):
     # POST /add_funds/<user_id>/<amount>
     if method == "POST" and len(segments) >= 3 and segments[0] == "add_funds":
         user_id, amount = segments[1], int(segments[2])
+        if amount <= 0:
+            return 400, {"error": "Amount must be positive!"}
         cached = check_idempotency_kafka(conn, idem_key)
         if cached:
             return cached
@@ -67,6 +69,8 @@ def route_kafka_message(payload, conn):
     # POST /pay/<user_id>/<amount>
     if method == "POST" and len(segments) >= 3 and segments[0] == "pay":
         user_id, amount = segments[1], int(segments[2])
+        if amount <= 0:
+            return 400, {"error": "Amount must be positive!"}
         cached = check_idempotency_kafka(conn, idem_key)
         if cached:
             return cached
