@@ -117,7 +117,7 @@ def checkout(order_id: str):
     if TRANSACTION_MODE == "TPC":
         return tpc.checkout_tpc(order_id)
     else:
-        return saga.checkout_saga_http(order_id, g.conn)
+        abort(400, "Something went wrong! The checkout failed in SAGA Mode.")
 
 
 @app.route("/health")
