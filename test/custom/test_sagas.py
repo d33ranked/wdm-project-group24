@@ -423,10 +423,10 @@ def test_coordinator_crash_after_payment():
     _docker_exec_sql(ORDER_DB, "orders",
          f"UPDATE sagas SET state = 'PAYMENT_REQUESTED' WHERE id = '{saga_id}'")
 
-    _docker_exec_sql(PAYMENT_DB, "payment",
+    _docker_exec_sql(PAYMENT_DB, "payments",
          f"UPDATE users SET credit = credit - {ORDER_PRICE} WHERE id = '{user}'")
 
-    _docker_exec_sql(PAYMENT_DB, "payment",
+    _docker_exec_sql(PAYMENT_DB, "payments",
          f"INSERT INTO idempotency_keys (key, status_code, body) "
             f"VALUES ('{payment_idem_key}', 200, '{payment_cached_body}') ON CONFLICT DO NOTHING")
 
@@ -579,10 +579,10 @@ def test_coordinator_crash_after_completed():
     _docker_exec_sql(ORDER_DB, "orders",
          f"UPDATE sagas SET state = 'PAYMENT_REQUESTED' WHERE id = '{saga_id}'")
 
-    _docker_exec_sql(PAYMENT_DB, "payment",
+    _docker_exec_sql(PAYMENT_DB, "payments",
          f"UPDATE users SET credit = credit - {int(ORDER_PRICE)} WHERE id = '{user}'")
 
-    _docker_exec_sql(PAYMENT_DB, "payment",
+    _docker_exec_sql(PAYMENT_DB, "payments",
          f"INSERT INTO idempotency_keys (key, status_code, body) "
             f"VALUES ('{payment_idem_key}', 200, '{payment_cached_body}') ON CONFLICT DO NOTHING")
 
@@ -813,16 +813,16 @@ def test_payment_crash_recovery():
 # Ordered test list — imported by run.py
 # ---------------------------------------------------------------------------
 TESTS = [
-    # ("Compensating Transaction: Payment Fails, Stock Rolled Back", test_compensation_payment_fails),
-    # ("Stock Reservation Fails — No Payment Attempted", test_stock_fails_no_payment),
-    # ("Participant Crash: Stock Dies Mid-Saga And Recovers", test_stock_crash_recovery),
-    # ("Participant Crash: Payment Dies Mid-Saga And Recovers", test_payment_crash_recovery),
-    # ("Coordinator Crash: Saga Crashes Before Stock Request", test_coordinator_crash_before_stock),
-    # ("Coordinator Crash: Saga Crashes After Stock Request", test_coordinator_crash_after_stock),
-    # ("Coordinator Crash: Saga Crashes Before Payment Request", test_coordinator_crash_before_payment),
+    ("Compensating Transaction: Payment Fails, Stock Rolled Back", test_compensation_payment_fails),
+    ("Stock Reservation Fails — No Payment Attempted", test_stock_fails_no_payment),
+    ("Participant Crash: Stock Dies Mid-Saga And Recovers", test_stock_crash_recovery),
+    ("Participant Crash: Payment Dies Mid-Saga And Recovers", test_payment_crash_recovery),
+    ("Coordinator Crash: Saga Crashes Before Stock Request", test_coordinator_crash_before_stock),
+    ("Coordinator Crash: Saga Crashes After Stock Request", test_coordinator_crash_after_stock),
+    ("Coordinator Crash: Saga Crashes Before Payment Request", test_coordinator_crash_before_payment),
     ("Coordinator Crash: Saga Crashes After Payment Request", test_coordinator_crash_after_payment),
-    # ("Coordinator Crash: Saga Crashes After Stock Failed", test_coordinator_crash_stock_failed),
+    ("Coordinator Crash: Saga Crashes After Stock Failed", test_coordinator_crash_stock_failed),
     ("Coordinator Crash: Saga Crashes After Saga Completed", test_coordinator_crash_after_completed),
-    # ("Coordinator Crash: Saga Crashes After Rollback Requested", test_coordinator_crash_before_rolled_back),
-    # ("Coordinator Crash: Saga Crashes After Rollback Successful", test_coordinator_crash_after_rolled_back),
+    ("Coordinator Crash: Saga Crashes After Rollback Requested", test_coordinator_crash_before_rolled_back),
+    ("Coordinator Crash: Saga Crashes After Rollback Successful", test_coordinator_crash_after_rolled_back),
 ]
