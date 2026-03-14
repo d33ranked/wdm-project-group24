@@ -383,18 +383,16 @@ def handle_internal_response(payload):
         saga = get_saga_for_update(conn, saga_id)
         if saga is None:
             logger.error("Saga %s not found", saga_id)
-            conn.rollback()
             return
         if saga["state"] != expected_state:
             logger.warning("Saga %s: expected %s got %s — skipping", saga_id, expected_state, saga["state"])
-            conn.rollback()
             return
         handler_fn(conn, saga, payload)
     except Exception as exc:
         logger.error("Error advancing saga %s: %s", saga_id, exc, exc_info=True)
+    finally:
         try: conn.rollback()
         except Exception: pass
-    finally:
         _conn_pool.putconn(conn)
 
 
@@ -428,10 +426,10 @@ def start_gateway_consumer(gateway_kafka):
                     result = route_gateway_message(payload, conn)
                 except Exception as exc:
                     logger.error("Error processing %s: %s", correlation_id, exc, exc_info=True)
-                    try: conn.rollback()
-                    except Exception: pass
                     result = (500, {"error": "Internal server error"})
                 finally:
+                    try: conn.rollback()
+                    except Exception: pass
                     _conn_pool.putconn(conn)
 
                 if result is not None:

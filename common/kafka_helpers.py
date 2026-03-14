@@ -51,10 +51,10 @@ def run_consumer_loop(conn_pool, bootstrap_servers, topic, group_id,
                     status_code, body = route_fn(payload, conn)
                 except Exception as exc:
                     logger.error("Error processing %s: %s", correlation_id, exc, exc_info=True)
-                    try: conn.rollback()
-                    except Exception: pass
                     status_code, body = 500, {"error": "Internal server error"}
                 finally:
+                    try: conn.rollback()
+                    except Exception: pass
                     conn_pool.putconn(conn)
 
                 publish_response(producer, response_topic, correlation_id, status_code, body)
