@@ -59,6 +59,8 @@ def find_item(item_id: str):
 
 @app.post("/add/<item_id>/<amount>")
 def add_stock(item_id: str, amount: int):
+    if int(amount) <= 0:
+        abort(400, "Amount must be positive!")
     idem_key = request.headers.get("Idempotency-Key")
     cached = check_idempotency_http(g.conn, idem_key)
     if cached is not None:
@@ -79,6 +81,8 @@ def add_stock(item_id: str, amount: int):
 
 @app.post("/subtract/<item_id>/<amount>")
 def remove_stock(item_id: str, amount: int):
+    if int(amount) <= 0:
+        abort(400, "Amount must be positive!")
     idem_key = request.headers.get("Idempotency-Key")
     cached = check_idempotency_http(g.conn, idem_key)
     if cached is not None:

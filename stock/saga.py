@@ -16,6 +16,8 @@ def db_subtract_stock_batch(conn, items):
         cur.execute("SELECT id, stock FROM items WHERE id = ANY(%s) ORDER BY id FOR UPDATE", (item_ids,))
         rows = {r[0]: r[1] for r in cur.fetchall()}
         for item_id, amount in items:
+            if amount <= 0:
+                raise ValueError(f"Item {item_id} has invalid amount {amount}: must be positive")
             if item_id not in rows:
                 raise ValueError(f"Item {item_id} not found")
             if rows[item_id] - amount < 0:
@@ -32,7 +34,9 @@ def db_add_stock_batch(conn, items):
     with conn.cursor() as cur:
         cur.execute("SELECT id, stock FROM items WHERE id = ANY(%s) ORDER BY id FOR UPDATE", (item_ids,))
         rows = {r[0]: r[1] for r in cur.fetchall()}
-        for item_id, _ in items:
+        for item_id, amount in items:
+            if amount <= 0:
+                raise ValueError(f"Item {item_id} has invalid amount {amount}: must be positive")
             if item_id not in rows:
                 raise ValueError(f"Item {item_id} not found")
         results = {}
@@ -89,6 +93,8 @@ def route_kafka_message(payload, conn):
     # POST /add/<item_id>/<amount>
     if method == "POST" and len(segments) >= 3 and segments[0] == "add":
         item_id, amount = segments[1], int(segments[2])
+        if amount <= 0:
+            return 400, {"error": "Amount must be positive!"}
         cached = check_idempotency_kafka(conn, idem_key)
         if cached:
             return cached
@@ -110,6 +116,8 @@ def route_kafka_message(payload, conn):
     # POST /subtract/<item_id>/<amount>
     if method == "POST" and len(segments) >= 3 and segments[0] == "subtract":
         item_id, amount = segments[1], int(segments[2])
+        if amount <= 0:
+            return 400, {"error": "Amount must be positive!"}
         cached = check_idempotency_kafka(conn, idem_key)
         if cached:
             return cached

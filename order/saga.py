@@ -211,6 +211,8 @@ def route_gateway_message(payload, conn):
     # POST /addItem/<order_id>/<item_id>/<quantity>
     if method == "POST" and len(segments) >= 4 and segments[0] == "addItem":
         order_id, item_id, quantity = segments[1], segments[2], int(segments[3])
+        if quantity <= 0:
+            return 400, {"error": "Quantity must be positive!"}
         cached = check_idempotency_kafka(conn, idem_key)
         if cached:
             return cached

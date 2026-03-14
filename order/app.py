@@ -88,6 +88,8 @@ def find_order(order_id: str):
 @app.post("/addItem/<order_id>/<item_id>/<quantity>")
 def add_item(order_id: str, item_id: str, quantity: int):
     quantity = int(quantity)
+    if quantity <= 0:
+        abort(400, "Quantity must be positive!")
     idem_key = request.headers.get("Idempotency-Key")
     cached = check_idempotency_http(g.conn, idem_key)
     if cached is not None:
