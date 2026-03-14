@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 # HTTP Helpers (Retry With Exponential Backoff)
 # ---------------------------------------------------------------------------
 
-def send_post_request(url, idempotency_key=None, max_retries=7):
+def send_post_request(url, idempotency_key=None, max_retries=7, json_body=None):
     headers = {"Idempotency-Key": idempotency_key} if idempotency_key else {}
     start = perf_counter()
     for attempt in range(max_retries + 1):
         try:
-            response = requests.post(url, headers=headers, timeout=5)
+            response = requests.post(url, headers=headers, json=json_body, timeout=5)
             if response.status_code < 500:
                 logger.debug("ORDER: POST took %.7fs", perf_counter() - start)
                 return response
@@ -111,30 +111,31 @@ def checkout_tpc(order_id):
         )
         conn.commit()
 
-        # Step 3: Prepare Each Stock Item
+        # Step 3: Prepare All Stock Items In One Batch Request
         cur.execute("UPDATE transaction_log SET status = 'preparing_stock' WHERE txn_id = %s", (txn_id,))
         conn.commit()
 
-        prepared_stock = []
-        for item_id, qty in sorted(items_quantities.items()):
-            reply = send_post_request(
-                f"{GATEWAY_URL}/stock/prepare/{txn_id}/{item_id}/{qty}",
-                idempotency_key=f"{txn_id}:stock:prepare:{item_id}",
-            )
-            if reply.status_code != 200:
-                # Stock Voted NO — Abort All
-                cur.execute("UPDATE transaction_log SET status = 'aborting' WHERE txn_id = %s", (txn_id,))
-                conn.commit()
-                abort_tpc(txn_id, prepared_stock, False)
-                cur.execute("UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s", (txn_id,))
-                conn.commit()
-                abort(400, "Failed to PREPARE stock")
+        batch_items = [{"item_id": iid, "quantity": qty} for iid, qty in sorted(items_quantities.items())]
+        prepared_stock = [[e["item_id"], e["quantity"]] for e in batch_items]
 
-            # Persist Prepared Item For Crash Recovery
-            prepared_stock.append([item_id, qty])
-            cur.execute("UPDATE transaction_log SET prepared_stock = %s WHERE txn_id = %s",
-                        (json.dumps(prepared_stock), txn_id))
+        stock_reply = send_post_request(
+            f"{GATEWAY_URL}/stock/prepare_batch/{txn_id}",
+            idempotency_key=f"{txn_id}:stock:prepare_batch",
+            json_body={"items": batch_items},
+        )
+        if stock_reply.status_code != 200:
+            # Stock Voted NO — Abort
+            cur.execute("UPDATE transaction_log SET status = 'aborting' WHERE txn_id = %s", (txn_id,))
             conn.commit()
+            abort_tpc(txn_id, [], False)
+            cur.execute("UPDATE transaction_log SET status = 'aborted' WHERE txn_id = %s", (txn_id,))
+            conn.commit()
+            abort(400, "Failed to PREPARE stock")
+
+        # Persist Prepared Items For Crash Recovery
+        cur.execute("UPDATE transaction_log SET prepared_stock = %s WHERE txn_id = %s",
+                    (json.dumps(prepared_stock), txn_id))
+        conn.commit()
 
         # Step 4: Prepare Payment
         cur.execute("UPDATE transaction_log SET status = 'preparing_payment' WHERE txn_id = %s", (txn_id,))
