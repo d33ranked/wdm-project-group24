@@ -122,6 +122,8 @@ def handle_gateway_message(payload: dict, conn) -> tuple:
     idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
     corr_id  = payload.get("correlation_id", "")
 
+    logger.info(f"Handeling message with payload: {payload}")
+
     # POST /create/<user_id>
     if method == "POST" and len(segments) >= 2 and segments[0] == "create":
         order_id = str(uuid.uuid4())

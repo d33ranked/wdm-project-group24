@@ -39,6 +39,9 @@ INTERNAL_KAFKA = os.environ.get("INTERNAL_KAFKA_BOOTSTRAP_SERVERS", "kafka-inter
 # ---------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO)
+for _noisy in ("kafka", "kafka.conn", "kafka.client",
+               "kafka.consumer", "kafka.producer"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

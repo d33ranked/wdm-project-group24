@@ -256,6 +256,7 @@ def run_consumer_loop(
         conn = conn_pool.getconn()
         try:
             result = route_fn(payload, conn)
+            logger.info(f"Got result: {result}")
         except Exception as exc:
             logger.error(
                 "%s error: correlation_id=%s partition=%s offset=%s — %s",
@@ -273,9 +274,7 @@ def run_consumer_loop(
         # Publish only if route_fn returned a real result (not async)
         if result is not None and result != (None, None) and correlation_id:
             status_code, body = result
-            if status_code is not None:
-                publish_response(producer, response_topic,
-                                 correlation_id, status_code, body)
+            publish_response(producer, response_topic, correlation_id, status_code, body)
 
         # Advance commit cursor — must happen even if publish skipped
         with trackers_lock:
@@ -321,6 +320,7 @@ def run_consumer_loop(
                     tp      = TopicPartition(message.topic, message.partition)
                     offset  = message.offset
                     payload = message.value
+                    logger.info(f"Got message: {message}")
 
                     # Skip malformed messages but advance their offset so they
                     # don't permanently stall the commit cursor

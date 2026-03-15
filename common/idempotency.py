@@ -18,7 +18,7 @@ def get_advisory_lock(cur, key: str) -> None:
     """Acquire a transaction-scoped advisory lock keyed on an arbitrary string."""
     # Derive a stable 32-bit integer lock token from an idempotency key string.
     token = int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**31)
-    cur.execute("SELECT pg_advisory_xact_lock(%s)", (token))
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (token,))
 
 
 def check_idempotency(cur, idem_key: str | None):

@@ -47,6 +47,7 @@ Consistency guarantees
   - Both paths are fully idempotent by txn_id via advisory_lock.
 """
 
+from email import message
 import json
 import logging
 import uuid
@@ -108,8 +109,11 @@ def handle_gateway_message(payload, conn):
     segments = [s for s in path.strip("/").split("/") if s]
     idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
 
+    logger.info(f"Handeling message with payload: {payload}")
+
     # POST /item/create/<price>
     if method == "POST" and len(segments) >= 3 and segments[0] == "item" and segments[1] == "create":
+        logger.info(f"Handeling create message: {payload}")
         price = int(segments[2])
         if price < 0:
             return 400, {"error": "Price must be non-negative!"}
@@ -120,6 +124,7 @@ def handle_gateway_message(payload, conn):
                 (item_id, 0, price),
             )
         conn.commit()
+        logger.info("Finished handeling create")
         return 201, {"item_id": item_id}
 
     # POST /batch_init/<n>/<starting_stock>/<item_price>
@@ -144,10 +149,12 @@ def handle_gateway_message(payload, conn):
     # GET /find/<item_id>
     if method == "GET" and len(segments) >= 2 and segments[0] == "find":
         item_id = segments[1]
+        logger.info(f"Handling find for: {item_id}")
         with conn.cursor() as cur:
             cur.execute("SELECT stock, price FROM items WHERE id = %s", (item_id,))
             row = cur.fetchone()
         conn.commit()
+        logger.info("Finshed handeling find")
         if row is None:
             return 400, {"error": f"Item {item_id} not found"}
         return 200, {"item_id": item_id, "stock": row[0], "price": row[1]}
@@ -155,6 +162,7 @@ def handle_gateway_message(payload, conn):
     # POST /add/<item_id>/<amount>
     if method == "POST" and len(segments) >= 3 and segments[0] == "add":
         item_id, amount = segments[1], int(segments[2])
+        logger.info(f"Handling add for: {item_id} with {amount}")
         if amount <= 0:
             return 400, {"error": "Amount must be positive! use the subtract endpoint."}
         with conn.cursor() as cur:
@@ -174,6 +182,7 @@ def handle_gateway_message(payload, conn):
             resp = f"Item: {item_id} stock updated, added {amount}"
             save_idempotency(cur, idem_key, 200, resp)
         conn.commit()
+        logger.info("successfully finished add item")
         return 200, resp
 
     # POST /subtract/<item_id>/<amount>
@@ -198,7 +207,6 @@ def handle_gateway_message(payload, conn):
                 "UPDATE items SET stock = stock - %s WHERE id = %s RETURNING stock",
                 (amount, item_id),
             )
-            new_stock = cur.fetchone()[0]
             resp = f"Item: {item_id} stock updated subtraced {amount}"
             save_idempotency(cur, idem_key, 200, resp)
         conn.commit()
