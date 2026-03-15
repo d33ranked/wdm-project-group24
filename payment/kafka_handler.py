@@ -263,7 +263,7 @@ def _tpc_rollback(conn, txn_id):
     with conn.cursor() as cur:
         # FOR UPDATE prevents two concurrent rollbacks from both refunding
         cur.execute(
-            "SELECT user_id, amount FROM prepared_transactions WHERE txn_id = %s FOR UPDATE",
+            "DELETE FROM prepared_transactions WHERE txn_id = %s RETURNING user_id, amount",
             (txn_id,),
         )
         row = cur.fetchone()
@@ -277,7 +277,6 @@ def _tpc_rollback(conn, txn_id):
 
         # Restore credit and remove undo-log entry atomically
         cur.execute("UPDATE users SET credit = credit + %s WHERE id = %s", (amount, user_id))
-        cur.execute("DELETE FROM prepared_transactions WHERE txn_id = %s", (txn_id,))
 
     conn.commit()
     logger.info("TPC rolled back txn=%s user=%s refunded=%s", txn_id, user_id, amount)
@@ -368,10 +367,8 @@ def _saga_rollback(conn, txn_id):
     applied — treat as success.
     """
     with conn.cursor() as cur:
-        # FOR UPDATE prevents two concurrent rollbacks from both refunding
-        get_advisory_lock(cur, txn_id)
         cur.execute(
-            "SELECT user_id, amount FROM compensating_transactions WHERE txn_id = %s FOR UPDATE",
+            "DELETE FROM compensating_transactions WHERE txn_id = %s RETURNING user_id, amount",
             (txn_id,),
         )
         row = cur.fetchone()
@@ -385,7 +382,6 @@ def _saga_rollback(conn, txn_id):
 
         # Restore credit and remove compensating entry atomically
         cur.execute("UPDATE users SET credit = credit + %s WHERE id = %s", (amount, user_id))
-        cur.execute("DELETE FROM compensating_transactions WHERE txn_id = %s", (txn_id,))
 
     conn.commit()
     logger.info("SAGA rolled back txn=%s user=%s refunded=%s", txn_id, user_id, amount)
