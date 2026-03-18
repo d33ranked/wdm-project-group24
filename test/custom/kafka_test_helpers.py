@@ -8,27 +8,27 @@ Kafka broker that mirrors the api() HTTP helper used in all tests.
 
 Design
 ------
-- One ephemeral reply topic is created per test-run (e.g. "test.replies.20250318-142305").
-  All kafka_api() calls in the run share this topic.  It is deleted on exit.
-- Each kafka_api() call gets its own consumer group (f"cg-{correlation_id}"),
-  so consumers never compete and there is no cross-contamination between calls
-  or between concurrent runs.
-- correlation_id is still included in every message so services can echo it
-  back; the consumer reads only from its private group so no filtering is
-  required, but having the id in the payload is useful for debugging.
-- On timeout a FakeResponse(504) is returned — the check() pattern stays intact
-  and a missing reply shows as [FAIL] rather than a traceback.
+Services publish all internal responses to the fixed topic "internal.responses"
+(hardcoded in kafka_helpers.py via the response_topic passed to
+run_consumer_loop).  The reply_to field in the request payload is ignored by
+services — they always respond to their configured response_topic.
 
-Service-side requirement
-------------------------
-Each service must echo `correlation_id` back into its reply payload and
-publish the reply to the topic named in the `reply_to` field of the request.
-If your kafka_helpers.py already forwards these fields transparently, no
-service changes are needed.
+Therefore this helper:
+  - Sends requests to the appropriate internal.{service}.tpc / saga topic
+  - Listens on "internal.responses" with a unique consumer group per call
+  - Filters messages by correlation_id to find its own reply
+
+Each call uses its own consumer group (f"cg-{correlation_id}") so consumers
+never compete and there is no cross-contamination between calls.
+
+On timeout a FakeResponse(504) is returned — the check() pattern stays intact
+and a missing reply shows as [FAIL] rather than a traceback.
 
 Usage
 -----
-    from test_kafka import kafka_api, kafka_tpc, kafka_saga
+    from test_kafka import kafka_api, kafka_tpc, kafka_saga, wait_for_kafka
+
+    wait_for_kafka()   # call once before your first kafka_tpc/saga call
 
     r = kafka_tpc("stock", {
         "type":     "stock.prepare",
@@ -39,7 +39,6 @@ Usage
     check("Stock PREPARE votes YES", r.status_code == 200)
 """
 
-import atexit
 import json
 import os
 import uuid
@@ -59,48 +58,97 @@ INTERNAL_KAFKA = os.environ.get(
 )
 DEFAULT_TIMEOUT = 15   # seconds to wait for a reply
 
+# Topic that all internal services publish their responses to
+RESPONSE_TOPIC = "internal.responses"
+
+_RUN_ID = datetime.now().strftime("%y%m%d-%H%M%S")
+
+
 # ---------------------------------------------------------------------------
-# Ephemeral reply topic — one per test-run, deleted on exit
+# Kafka readiness wait
 # ---------------------------------------------------------------------------
-_RUN_ID         = datetime.now().strftime("%y%m%d-%H%M%S")
-REPLY_TOPIC     = f"test.replies.{_RUN_ID}"
-_topic_ready    = False   # created lazily on first kafka_api() call
 
+def wait_for_kafka(timeout: int = 60) -> bool:
+    """
+    Block until the internal Kafka broker can complete a full produce->consume
+    round-trip, mirroring the wait_for_service() pattern used for HTTP endpoints.
 
-def _ensure_reply_topic():
-    """Create the ephemeral reply topic if it does not yet exist."""
-    global _topic_ready
-    if _topic_ready:
-        return
-    admin = KafkaAdminClient(bootstrap_servers=INTERNAL_KAFKA)
-    try:
-        admin.create_topics([NewTopic(
-            name=REPLY_TOPIC,
-            num_partitions=1,
-            replication_factor=1,
-        )])
-        print(f"  [kafka] created ephemeral reply topic: {REPLY_TOPIC}")
-    except TopicAlreadyExistsError:
-        pass
-    finally:
-        admin.close()
-    _topic_ready = True
+    A plain metadata probe (KafkaAdminClient.list_topics) succeeds as soon as
+    the TCP connection is accepted, but Kafka brokers advertise an internal
+    listener hostname (e.g. kafka-internal:9092) that may not be resolvable
+    from the test-runner host.  The producer then fails with NodeNotReadyError
+    when it tries to reconnect to that advertised address.
 
+    By actually sending a message and reading it back we prove the full path
+    works before any real test message is sent.
+    """
+    PROBE_TOPIC = f"test.probe.{_RUN_ID}"
+    print(f"  [kafka] waiting for broker at {INTERNAL_KAFKA} ...")
 
-def _delete_reply_topic():
-    """Delete the ephemeral reply topic on process exit."""
-    if not _topic_ready:
-        return
-    try:
-        admin = KafkaAdminClient(bootstrap_servers=INTERNAL_KAFKA)
-        admin.delete_topics([REPLY_TOPIC])
-        admin.close()
-        print(f"  [kafka] deleted ephemeral reply topic: {REPLY_TOPIC}")
-    except Exception:
-        pass   # best-effort cleanup
+    start = time.time()
+    while time.time() - start < timeout:
+        producer = None
+        consumer = None
+        try:
+            # 1. Create the probe topic
+            admin = KafkaAdminClient(
+                bootstrap_servers=INTERNAL_KAFKA,
+                request_timeout_ms=3000,
+            )
+            try:
+                admin.create_topics([NewTopic(
+                    name=PROBE_TOPIC,
+                    num_partitions=1,
+                    replication_factor=1,
+                )])
+            except TopicAlreadyExistsError:
+                pass
+            finally:
+                admin.close()
 
+            # 2. Produce a sentinel message
+            producer = KafkaProducer(
+                bootstrap_servers=INTERNAL_KAFKA,
+                value_serializer=lambda v: json.dumps(v).encode(),
+                request_timeout_ms=3000,
+                max_block_ms=3000,
+            )
+            future = producer.send(PROBE_TOPIC, value={"probe": True})
+            future.get(timeout=5)   # raises on delivery failure
+            producer.flush()
 
-atexit.register(_delete_reply_topic)
+            # 3. Consume it back — confirms the full path is live
+            consumer = KafkaConsumer(
+                PROBE_TOPIC,
+                bootstrap_servers=INTERNAL_KAFKA,
+                group_id=f"probe-{_RUN_ID}",
+                auto_offset_reset="earliest",
+                enable_auto_commit=False,
+                value_deserializer=lambda b: json.loads(b.decode()),
+                consumer_timeout_ms=5000,
+            )
+            for _ in consumer:
+                print(f"  [kafka] broker is ready")
+                return True
+
+        except Exception:
+            pass
+        finally:
+            if producer:
+                try:
+                    producer.close(timeout=1)
+                except Exception:
+                    pass
+            if consumer:
+                try:
+                    consumer.close()
+                except Exception:
+                    pass
+
+        time.sleep(2)
+
+    print(f"  [kafka] timed out waiting for broker after {timeout}s")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +184,7 @@ class TimeoutResponse(FakeResponse):
             "type":        "test.timeout",
             "detail": (
                 f"No reply received within {timeout}s "
-                f"(sent to={topic}, reply_topic={REPLY_TOPIC}, "
+                f"(sent to={topic}, response_topic={RESPONSE_TOPIC}, "
                 f"correlation_id={correlation_id})"
             ),
         })
@@ -169,43 +217,47 @@ def kafka_api(
 ) -> FakeResponse:
     """
     Send `payload` to `topic` on the internal Kafka broker and block until
-    the reply arrives on this run's ephemeral reply topic (or timeout).
+    the matching reply arrives on "internal.responses" (or timeout).
 
-    `correlation_id` and `reply_to` are injected automatically.
-    Each call uses its own consumer group so messages are never shared or
-    missed between concurrent or sequential calls.
+    Services always publish responses to their fixed response_topic
+    (internal.responses) — they do not honour a reply_to field.
+    We filter by correlation_id to find our own reply.
+
+    Each call uses its own consumer group so messages are never shared
+    between concurrent or sequential calls.
     """
-    _ensure_reply_topic()
-
     correlation_id = str(uuid.uuid4())
     message = {
         **payload,
         "correlation_id": correlation_id,
-        "reply_to":        REPLY_TOPIC,
     }
 
-    # ---- Produce -------------------------------------------------------
-    _get_producer().send(topic, value=message)
-    _get_producer().flush()
-
-    # ---- Consume — private group, reads from latest offset -------------
-    # Using auto_offset_reset="earliest" on an empty, brand-new group means
-    # we catch the reply even if it arrives before the consumer fully joins.
+    # ---- Consume BEFORE producing to avoid missing a fast reply -----------
+    # auto_offset_reset="latest" so we only see messages arriving after we
+    # start listening — old responses from prior tests are ignored.
     group_id = f"cg-{correlation_id}"
     consumer = KafkaConsumer(
-        REPLY_TOPIC,
+        RESPONSE_TOPIC,
         bootstrap_servers=INTERNAL_KAFKA,
         group_id=group_id,
         auto_offset_reset="earliest",
         enable_auto_commit=False,
         value_deserializer=lambda b: json.loads(b.decode()),
     )
+    # Force partition assignment before producing so we don't miss the reply
+    consumer.poll(timeout_ms=1000)
 
+    # ---- Produce ----------------------------------------------------------
+    _get_producer().send(topic, value=message)
+    _get_producer().flush()
+
+    # ---- Poll until we see our correlation_id or time out -----------------
     deadline = time.time() + timeout
     try:
         while time.time() < deadline:
             remaining_ms = int((deadline - time.time()) * 1000)
             if remaining_ms <= 0:
+                print(f"timed out for msg: {message}")
                 break
             records = consumer.poll(timeout_ms=min(remaining_ms, 500))
             for _, messages in records.items():

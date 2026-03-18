@@ -62,7 +62,7 @@ def docker_cmd(cmd: str):
 def docker_exec_sql(container: str, db: str, sql: str):
     """Execute a SQL statement inside a postgres container."""
     subprocess.run(
-        ["docker", "exec", container, "psql", "-U", "user", "-d", db, "-c", sql],
+        ["sudo", "docker", "exec", container, "psql", "-U", "user", "-d", db, "-c", sql],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
