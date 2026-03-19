@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 def create_conn_pool(service_name):
     pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=10, maxconn=100,
+        minconn=int(os.environ.get("DB_POOL_MIN", 5)),
+        maxconn=int(os.environ.get("DB_POOL_MAX", 100)),
         host=os.environ["POSTGRES_HOST"],
         port=int(os.environ["POSTGRES_PORT"]),
         dbname=os.environ["POSTGRES_DB"],
