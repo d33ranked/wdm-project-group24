@@ -22,7 +22,7 @@ import re
 import sys
 from datetime import datetime, timedelta
 
-LOG_DIR = "/logs"
+LOG_DIR = os.path.join(os.getcwd(), "logs")
 
 # Matches the timestamp tail of the filename: YYMMDD-HHMMSS.log
 # Works for both "service-YYMMDD-HHMMSS.log" and "YYMMDD-HHMMSS.log"

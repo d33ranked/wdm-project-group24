@@ -27,6 +27,7 @@ from db import get_saga_for_update, advance_saga, mark_order_paid
 logger = logging.getLogger(__name__)
 
 RECOVERY_INTERVAL_S = int(os.environ.get("RECOVERY_INTERVAL_S", "30"))
+RECOVERY_STARTUP_S = int(os.environ.get("RECOVERY_STARTUP_S", "0"))
 
 _STOCK_SAGA_TOPIC   = "internal.stock.saga"
 _PAYMENT_SAGA_TOPIC = "internal.payment.saga"
@@ -50,7 +51,7 @@ def _send(producer, topic: str, corr_id: str, msg_type: str, body: dict) -> None
 # SAGA recovery
 # ---------------------------------------------------------------------------
 
-def _recover_sagas(conn, conn_pool, internal_producer, gateway_producer) -> None:
+def _recover_sagas(conn, conn_pool, internal_producer, gateway_producer, age_seconds) -> None:
     from saga import SagaState, TERMINAL_STATES
 
     with conn.cursor() as cur:
@@ -59,7 +60,7 @@ def _recover_sagas(conn, conn_pool, internal_producer, gateway_producer) -> None
             "       original_correlation_id, idempotency_key, failure_reason "
             "FROM sagas WHERE state NOT IN %s "
             "AND updated_at < NOW() - INTERVAL '%s seconds'",
-            (TERMINAL_STATES, RECOVERY_INTERVAL_S),
+            (TERMINAL_STATES, age_seconds),
         )
         rows = cur.fetchall()
 
@@ -143,7 +144,7 @@ def _recover_sagas(conn, conn_pool, internal_producer, gateway_producer) -> None
 # TPC recovery
 # ---------------------------------------------------------------------------
 
-def _recover_tpc(conn, internal_producer) -> None:
+def _recover_tpc(conn, internal_producer, age_seconds) -> None:
     from tpc import TpcStatus, TERMINAL_STATUSES
 
     with conn.cursor() as cur:
@@ -152,7 +153,7 @@ def _recover_tpc(conn, internal_producer) -> None:
             "       stock_vote, payment_vote "
             "FROM transaction_log WHERE status NOT IN %s "
             "AND updated_at < NOW() - INTERVAL '%s seconds'",
-            (TERMINAL_STATUSES, RECOVERY_INTERVAL_S),
+            (TERMINAL_STATUSES, age_seconds),
         )
         rows = cur.fetchall()
 
@@ -200,27 +201,23 @@ def _recover_tpc(conn, internal_producer) -> None:
 # ---------------------------------------------------------------------------
 # Recovery loop
 # ---------------------------------------------------------------------------
+def run_once(conn_pool, internal_producer, gateway_producer) -> None:
+    """Blocking startup pass — uses age=0 to catch everything pending."""
+    _run_once(conn_pool, internal_producer, gateway_producer,age_seconds=RECOVERY_STARTUP_S)
 
 def run_recovery_loop(conn_pool, internal_producer, gateway_producer) -> None:
-    """
-    Periodically re-drive stale in-flight sagas and TPC transactions.
-    Runs as a daemon thread for the lifetime of the process.
-    """
     logger.info("Recovery loop started (interval=%ds)", RECOVERY_INTERVAL_S)
-
-    # Run immediately at startup before consumers begin
-    _run_once(conn_pool, internal_producer, gateway_producer)
-
     while True:
         time.sleep(RECOVERY_INTERVAL_S)
-        _run_once(conn_pool, internal_producer, gateway_producer)
+        _run_once(conn_pool, internal_producer, gateway_producer,
+                  age_seconds=RECOVERY_INTERVAL_S)
 
-
-def _run_once(conn_pool, internal_producer, gateway_producer) -> None:
+def _run_once(conn_pool, internal_producer, gateway_producer, age_seconds=RECOVERY_INTERVAL_S) -> None:
     conn = conn_pool.getconn()
     try:
-        _recover_sagas(conn, conn_pool, internal_producer, gateway_producer)
-        _recover_tpc(conn, internal_producer)
+        logger.info("Running recovery (age_threshold=%ds)", age_seconds)
+        _recover_sagas(conn, conn_pool, internal_producer, gateway_producer,age_seconds=age_seconds)
+        _recover_tpc(conn, internal_producer, age_seconds=age_seconds)
     except Exception as exc:
         logger.error("Recovery scan failed: %s", exc, exc_info=True)
         try:

@@ -514,9 +514,8 @@ def test_coordinator_crash_recovery():
     )
 
     # 3. Restart the order service — recovery runs on startup.
-    docker_cmd(f"docker restart {ORDER_CONTAINER}")
+    docker_cmd(f"sudo docker restart {ORDER_CONTAINER}")
     wait_for_service(f"/orders/find/{order}", timeout=90)
-    time.sleep(3)
 
     # 4. Verify recovery resolved the stuck transaction.
     #    status=PREPARING with no votes → recovery aborts both sides →

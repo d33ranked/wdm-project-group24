@@ -342,6 +342,7 @@ def _tpc_rollback(conn, txn_id):
         )
     conn.commit()
     logger.info("TPC rolled back txn=%s (%d items)", txn_id, len(rows))
+    logger.info(f"Rolled bac txn=%s, added: {[(quantity, item_id) for item_id, quantity in rows]}")
     return 200, {"type": "stock.rolledback", "txn_id": txn_id}
 
 

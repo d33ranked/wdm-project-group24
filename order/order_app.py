@@ -165,6 +165,29 @@ def main() -> None:
     tpc_coordinator.init(conn_pool, internal_producer, gateway_producer)
     saga_coordinator.init(conn_pool, internal_producer, gateway_producer)
 
+    # ----------------------------------------------------------------
+    # PHASE 1 — Recovery MUST finish before any consumer starts
+    # ----------------------------------------------------------------
+    MAX_RECOVERY_ATTEMPTS = 3
+    for attempt in range(1, MAX_RECOVERY_ATTEMPTS + 1):
+        try:
+            logger.info("Startup recovery attempt %d/%d…", attempt, MAX_RECOVERY_ATTEMPTS)
+            recovery.run_once(conn_pool, internal_producer, gateway_producer)
+            logger.info("Startup recovery complete — starting consumers")
+            break
+        except Exception as exc:
+            logger.error("Recovery attempt %d/%d failed: %s",
+                         attempt, MAX_RECOVERY_ATTEMPTS, exc, exc_info=True)
+            if attempt == MAX_RECOVERY_ATTEMPTS:
+                logger.critical("Recovery failed after %d attempts — refusing to start",
+                                MAX_RECOVERY_ATTEMPTS)
+                raise SystemExit(1)
+            time.sleep(2 ** attempt)  # 2s, 4s
+
+    # ----------------------------------------------------------------
+    # PHASE 2 — Consumers only start after recovery is confirmed done
+    # ----------------------------------------------------------------
+
     # Gateway consumer — thread pool for all inbound requests
     threading.Thread(
         target=run_consumer_loop,
