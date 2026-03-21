@@ -89,7 +89,6 @@ class KafkaClient:
         def consume():
             while True:
                 try:
-                    # auto_offset_reset="latest" — Only Read Messages Produced After Subscribe
                     consumer = kafka.KafkaConsumer(
                         RESPONSE_TOPIC,
                         bootstrap_servers=self.bootstrap_servers,

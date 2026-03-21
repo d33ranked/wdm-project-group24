@@ -6,12 +6,9 @@ Covers compensating transactions, participant crash recovery,
 and coordinator crash recovery via saga state persistence.
 """
 
-import json
 import subprocess
-import time
-import uuid
 
-from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_sql, wait_for_service
+from run import api, check, json_field, docker_cmd, wait_for_service
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +96,7 @@ def test_participant_crash_recovery():
 
     docker_cmd(f"sudo docker stop {CONTAINER}")
     subprocess.Popen(
-        f"sleep 3 && docker start {CONTAINER}",
+        f"sleep 3 && sudo docker start {CONTAINER}",
         shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
@@ -108,7 +105,7 @@ def test_participant_crash_recovery():
     expected_credit = CREDIT - (ITEM_PRICE * ITEM_QTY)
 
     check("Checkout Completed After Stock Service Recovered — Kafka Message Persisted And Processed",
-          r.status_code == 200, f"got {r.status_code}")
+          r.status_code == 200, f"got {r.status_code} with text: {r.text}")
 
     wait_for_service(f"/stock/find/{item}")
     stock = json_field(api("GET", f"/stock/find/{item}"), "stock")

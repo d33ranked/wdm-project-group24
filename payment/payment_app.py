@@ -1,9 +1,6 @@
 """
 Payment service — pure Kafka consumer process.
 
-No HTTP server.  All requests arrive via Kafka, all responses are published
-back to Kafka.  The api-gateway is the sole HTTP entry point for the system.
-
 Three consumer loops run as threads:
 
   gateway-consumer      — HTTP-proxy requests from the api-gateway

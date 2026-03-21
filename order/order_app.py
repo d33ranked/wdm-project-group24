@@ -1,8 +1,6 @@
 """
 Order service — pure Kafka consumer process.
 
-No HTTP server.  All requests arrive via Kafka, all responses published back.
-
 Four threads:
 
   gateway-consumer      thread pool via run_consumer_loop

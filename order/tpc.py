@@ -189,7 +189,7 @@ def handle_response(corr_id: str, payload: dict, conn) -> None:
             conn.rollback()
             return
 
-        if txn["status"] in TERMINAL_STATUSES:
+        elif txn["status"] in TERMINAL_STATUSES:
             logger.info("TPC txn=%s already terminal, ignoring duplicate", txn_id)
             conn.rollback()
             return

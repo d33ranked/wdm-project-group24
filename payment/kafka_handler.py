@@ -72,7 +72,7 @@ def handle_gateway_message(payload, conn):
         return 201, {"user_id": user_id}
 
     # POST /batch_init/<n>/<starting_money>
-    if method == "POST" and len(segments) >= 3 and segments[0] == "batch_init":
+    elif method == "POST" and len(segments) >= 3 and segments[0] == "batch_init":
         n, starting_money = int(segments[1]), int(segments[2])
         if n < 0:
             return 400, {"error": f"n must be non-negative, got: {n}"}
@@ -89,7 +89,7 @@ def handle_gateway_message(payload, conn):
         return 200, {"msg": "Batch init for users successful"}
 
     # GET /find_user/<user_id>
-    if method == "GET" and len(segments) >= 2 and segments[0] == "find_user":
+    elif method == "GET" and len(segments) >= 2 and segments[0] == "find_user":
         user_id = segments[1]
         with conn.cursor() as cur:
             cur.execute("SELECT credit FROM users WHERE id = %s", (user_id,))
@@ -100,7 +100,7 @@ def handle_gateway_message(payload, conn):
         return 200, {"user_id": user_id, "credit": row[0]}
 
     # POST /add_funds/<user_id>/<amount>
-    if method == "POST" and len(segments) >= 3 and segments[0] == "add_funds":
+    elif method == "POST" and len(segments) >= 3 and segments[0] == "add_funds":
         user_id, amount = segments[1], int(segments[2])
         if amount <= 0:
             return 400, {"error": "Amount must be positive!"}
@@ -125,7 +125,7 @@ def handle_gateway_message(payload, conn):
         return 200, resp
 
     # POST /pay/<user_id>/<amount>
-    if method == "POST" and len(segments) >= 3 and segments[0] == "pay":
+    elif method == "POST" and len(segments) >= 3 and segments[0] == "pay":
         user_id, amount = segments[1], int(segments[2])
         if amount <= 0:
             return 400, {"error": "Amount must be positive!"}
@@ -174,13 +174,13 @@ def handle_tpc_message(payload, conn):
         logger.warning("TPC message missing txn_id: %s", payload)
         return 400, {"type": "payment.failed", "txn_id": None, "reason": "missing txn_id"}
 
-    if msg_type == "payment.prepare":
+    elif msg_type == "payment.prepare":
         return _tpc_prepare(payload, conn, txn_id)
 
-    if msg_type == "payment.commit":
+    elif msg_type == "payment.commit":
         return _tpc_commit(conn, txn_id)
 
-    if msg_type == "payment.rollback":
+    elif msg_type == "payment.rollback":
         return _tpc_rollback(conn, txn_id)
 
     logger.warning("Unknown TPC message type: %s", msg_type)
@@ -216,7 +216,7 @@ def _tpc_prepare(payload, conn, txn_id):
         if row is None:
             conn.rollback()
             return 400, {"type": "payment.failed", "txn_id": txn_id, "reason": f"user {user_id} not found"}
-        if row[0] < amount:
+        elif row[0] < amount:
             conn.rollback()
             return 400, {"type": "payment.failed", "txn_id": txn_id, "reason": f"user {user_id} has insufficient funds"}
 
@@ -303,10 +303,10 @@ def handle_saga_message(payload, conn):
         logger.warning("SAGA message missing txn_id: %s", payload)
         return 400, {"type": "payment.failed", "txn_id": None, "reason": "missing txn_id"}
 
-    if msg_type == "payment.execute":
+    elif msg_type == "payment.execute":
         return _saga_execute(payload, conn, txn_id)
 
-    if msg_type == "payment.rollback":
+    elif msg_type == "payment.rollback":
         return _saga_rollback(conn, txn_id)
 
     logger.warning("Unknown SAGA message type: %s", msg_type)
@@ -344,7 +344,7 @@ def _saga_execute(payload, conn, txn_id):
         if row is None:
             conn.rollback()
             return 400, {"type": "payment.failed", "txn_id": txn_id, "reason": f"user {user_id} not found"}
-        if row[0] < amount:
+        elif row[0] < amount:
             conn.rollback()
             return 400, {"type": "payment.failed", "txn_id": txn_id, "reason": f"user {user_id} has insufficient funds"}
 

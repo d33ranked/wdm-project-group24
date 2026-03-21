@@ -126,13 +126,13 @@ def handle_gateway_message(payload, conn):
         return 201, {"item_id": item_id}
 
     # POST /batch_init/<n>/<starting_stock>/<item_price>
-    if method == "POST" and len(segments) >= 4 and segments[0] == "batch_init":
+    elif method == "POST" and len(segments) >= 4 and segments[0] == "batch_init":
         n, starting_stock, item_price = int(segments[1]), int(segments[2]), int(segments[3])
         if n < 0:
             return 400, {"error": f"n must be non-negative, got: {n}"}
-        if starting_stock < 0:
+        elif starting_stock < 0:
             return 400, {"error": f"starting_stock must be non-negative, got: {starting_stock}"}
-        if item_price < 0:
+        elif item_price < 0:
             return 400, {"error": f"item_price must be non-negative, got: {item_price}"}
         with conn.cursor() as cur:
             execute_batch(
@@ -145,7 +145,7 @@ def handle_gateway_message(payload, conn):
         return 200, {"msg": "Batch init for stock successful"}
 
     # GET /find/<item_id>
-    if method == "GET" and len(segments) >= 2 and segments[0] == "find":
+    elif method == "GET" and len(segments) >= 2 and segments[0] == "find":
         item_id = segments[1]
         logger.info(f"Handling find for: {item_id}")
         with conn.cursor() as cur:
@@ -158,7 +158,7 @@ def handle_gateway_message(payload, conn):
         return 200, {"item_id": item_id, "stock": row[0], "price": row[1]}
 
     # POST /add/<item_id>/<amount>
-    if method == "POST" and len(segments) >= 3 and segments[0] == "add":
+    elif method == "POST" and len(segments) >= 3 and segments[0] == "add":
         item_id, amount = segments[1], int(segments[2])
         logger.info(f"Handling add for: {item_id} with {amount}")
         if amount <= 0:
@@ -185,7 +185,7 @@ def handle_gateway_message(payload, conn):
         return 200, resp
 
     # POST /subtract/<item_id>/<amount>
-    if method == "POST" and len(segments) >= 3 and segments[0] == "subtract":
+    elif method == "POST" and len(segments) >= 3 and segments[0] == "subtract":
         item_id, amount = segments[1], int(segments[2])
         if amount <= 0:
             return 400, {"error": "Amount must be positive! Use the add enpoint."}
@@ -200,7 +200,7 @@ def handle_gateway_message(payload, conn):
             if row is None:
                 conn.rollback()
                 return 400, {"error": f"Item {item_id} not found"}
-            if row[0] - amount < 0:
+            elif row[0] - amount < 0:
                 conn.rollback()
                 return 400, {"error": f"Item {item_id} has insufficient stock"}
             cur.execute(
@@ -233,11 +233,11 @@ def handle_tpc_message(payload, conn):
         logger.warning("TPC message missing txn_id: %s", payload)
         return 400, {"type": "stock.failed", "txn_id": None, "reason": "missing txn_id"}
 
-    if msg_type == "stock.prepare":
+    elif msg_type == "stock.prepare":
         return _tpc_prepare(payload, conn, txn_id)
-    if msg_type == "stock.commit":
+    elif msg_type == "stock.commit":
         return _tpc_commit(conn, txn_id)
-    if msg_type == "stock.rollback":
+    elif msg_type == "stock.rollback":
         return _tpc_rollback(conn, txn_id)
 
     logger.warning("Unknown TPC message type: %s", msg_type)
@@ -272,7 +272,7 @@ def _tpc_prepare(payload, conn, txn_id):
             if item_id not in stock_map:
                 conn.rollback()
                 return 400, {"type": "stock.failed", "txn_id": txn_id, "reason": f"item {item_id} not found"}
-            if stock_map[item_id] < quantity:
+            elif stock_map[item_id] < quantity:
                 conn.rollback()
                 return 400, {"type": "stock.failed", "txn_id": txn_id, "reason": f"item {item_id} has insufficient stock"}
 
@@ -364,9 +364,9 @@ def handle_saga_message(payload, conn):
         logger.warning("SAGA message missing txn_id: %s", payload)
         return 400, {"type": "stock.failed", "txn_id": None, "reason": "missing txn_id"}
 
-    if msg_type == "stock.execute":
+    elif msg_type == "stock.execute":
         return _saga_execute(payload, conn, txn_id)
-    if msg_type == "stock.rollback":
+    elif msg_type == "stock.rollback":
         return _saga_rollback(conn, txn_id)
 
     logger.warning("Unknown SAGA message type: %s", msg_type)
@@ -402,7 +402,7 @@ def _saga_execute(payload, conn, txn_id):
             if item_id not in stock_map:
                 conn.rollback()
                 return 400, {"type": "stock.failed", "txn_id": txn_id, "reason": f"item {item_id} not found"}
-            if stock_map[item_id] < quantity:
+            elif stock_map[item_id] < quantity:
                 conn.rollback()
                 return 400, {"type": "stock.failed", "txn_id": txn_id, "reason": f"item {item_id} has insufficient stock"}
 
@@ -439,11 +439,7 @@ def _saga_rollback(conn, txn_id):
             return 200, {"type": "stock.rolledback", "txn_id": txn_id}
 
         # Lock item rows in sorted order before restoring
-        item_ids = sorted(item_id for item_id, _ in rows)
-        cur.execute(
-            "SELECT id FROM items WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
-            (item_ids,),
-        )
+        _lock_items_sorted(cur, item_ids=[item_id for item_id, _ in rows] )
         execute_batch(
             cur,
             "UPDATE items SET stock = stock + %s WHERE id = %s",

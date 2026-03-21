@@ -1,8 +1,7 @@
 """
 Database helpers — connection pool creation.
 
-Services are pure Kafka consumers with no HTTP server, so there is no Flask
-lifecycle to hook into.  Each Kafka worker thread borrows a connection from
+Each Kafka worker thread borrows a connection from
 the pool for the duration of one message, then returns it.
 """
 

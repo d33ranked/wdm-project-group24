@@ -12,9 +12,8 @@ checkout) remain HTTP requests through the gateway.
 """
 
 import subprocess
-import time
 
-from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_sql, wait_for_service
+from run import api, check, json_field, docker_cmd, wait_for_service
 from kafka_test_helpers import kafka_tpc, wait_for_kafka
 
 # ---------------------------------------------------------------------------

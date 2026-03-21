@@ -137,7 +137,7 @@ def handle_gateway_message(payload: dict, conn) -> tuple:
         return 201, {"order_id": order_id}
 
     # POST /batch_init/<n>/<n_items>/<n_users>/<item_price>
-    if method == "POST" and len(segments) >= 5 and segments[0] == "batch_init":
+    elif method == "POST" and len(segments) >= 5 and segments[0] == "batch_init":
         import random
         n, n_items, n_users, item_price = (
             int(segments[1]), int(segments[2]),
@@ -169,7 +169,7 @@ def handle_gateway_message(payload: dict, conn) -> tuple:
         return 200, {"msg": "Batch init for orders successful"}
 
     # GET /find/<order_id>
-    if method == "GET" and len(segments) >= 2 and segments[0] == "find":
+    elif method == "GET" and len(segments) >= 2 and segments[0] == "find":
         try:
             order = get_order(conn, segments[1])
         except ValueError as exc:
@@ -185,7 +185,7 @@ def handle_gateway_message(payload: dict, conn) -> tuple:
         }
 
     # POST /addItem/<order_id>/<item_id>/<quantity>
-    if method == "POST" and len(segments) >= 4 and segments[0] == "addItem":
+    elif method == "POST" and len(segments) >= 4 and segments[0] == "addItem":
         order_id = segments[1]
         item_id  = segments[2]
         quantity = int(segments[3])
@@ -242,7 +242,7 @@ def handle_gateway_message(payload: dict, conn) -> tuple:
         return 200, resp
 
     # POST /checkout/<order_id>
-    if method == "POST" and len(segments) >= 2 and segments[0] == "checkout":
+    elif method == "POST" and len(segments) >= 2 and segments[0] == "checkout":
         order_id = segments[1]
         if CHECKOUT_MODE == "TPC":
             return tpc_coordinator.checkout_tpc(conn, order_id, corr_id, idem_key)

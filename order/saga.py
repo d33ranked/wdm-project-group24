@@ -219,7 +219,7 @@ def handle_response(corr_id: str, payload: dict, conn) -> None:
             conn.rollback()
             return
 
-        if saga["state"] in TERMINAL_STATES:
+        elif saga["state"] in TERMINAL_STATES:
             logger.info("SAGA saga=%s already terminal, ignoring duplicate", saga_id)
             conn.rollback()
             return
