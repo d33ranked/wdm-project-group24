@@ -33,6 +33,11 @@ import tpc as tpc_coordinator
 import saga as saga_coordinator
 import recovery
 
+from viztracer import VizTracer
+
+TRACER_OUT_PATH = "/tracer/order"
+os.makedir(TRACER_OUT_PATH, exist_ok=True)
+
 GATEWAY_KAFKA  = os.environ.get("KAFKA_BOOTSTRAP_SERVERS",          "kafka-external:9092")
 INTERNAL_KAFKA = os.environ.get("INTERNAL_KAFKA_BOOTSTRAP_SERVERS", "kafka-internal:9092")
 
@@ -153,6 +158,12 @@ def _run_price_lookup_consumer(bootstrap: str) -> None:
 
 
 def main() -> None:
+    
+
+    tracer = VizTracer()
+    tracer.start()
+    # Something happens here
+    
     conn_pool = create_conn_pool("ORDER")
 
     gateway_producer  = build_producer(GATEWAY_KAFKA)
@@ -223,6 +234,9 @@ def main() -> None:
                 os.environ.get("CHECKOUT_MODE", "SAGA"))
 
     threading.Event().wait()
+
+    tracer.stop()
+    tracer.save(output_file = TRACER_OUT_PATH + "/result.json") # also takes output_file as an optional argument
 
 
 if __name__ == "__main__":

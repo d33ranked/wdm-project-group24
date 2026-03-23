@@ -10,4 +10,4 @@ COPY order/order_app.py order/db.py order/tpc.py order/saga.py order/recovery.py
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "order_app.py"]
+CMD ["viztracer", "order_app.py"]
