@@ -17,8 +17,9 @@ transactions.  SAGA transactions have no stale state — silence means success.
 import logging
 import os
 import threading
+import time
 
-from common.db import create_conn_pool
+from common.db_utils import create_ha_pool, FailoverDetected
 from common.kafka_helpers import build_producer, run_consumer_loop
 
 import kafka_handler
@@ -61,8 +62,45 @@ def _start_consumer(conn_pool, bootstrap, topic, group_id, producer, response_to
     ).start()
 
 
+def _run_failover_monitor(conn_pool, internal_producer) -> None:
+    """
+    Monitor leader changes detected by the connection pool.
+    When failover is detected, run stale transaction recovery to undo in-flight transactions.
+    Runs as a daemon thread.
+    """
+    logger.info("Failover monitor started")
+    previous_failover_state = conn_pool._failover_detected.is_set()
+    
+    while True:
+        try:
+            current_failover_state = conn_pool._failover_detected.is_set()
+            
+            # When failover_detected transitions from False to True, run recovery
+            if current_failover_state and not previous_failover_state:
+                logger.warning("Failover detected in monitor, triggering recovery...")
+                conn = conn_pool.getconn()
+                try:
+                    recovery._rollback_stale_transactions(conn, internal_producer)
+                    logger.info("Failover recovery complete")
+                except Exception as exc:
+                    logger.error("Failover recovery failed: %s", exc, exc_info=True)
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                finally:
+                    conn_pool.putconn(conn)
+            
+            previous_failover_state = current_failover_state
+            time.sleep(0.1)  # Poll failover state every 100ms
+            
+        except Exception as exc:
+            logger.error("Failover monitor error: %s", exc, exc_info=True)
+            time.sleep(1)
+
+
 def main():
-    conn_pool = create_conn_pool("STOCK")
+    conn_pool = create_ha_pool("STOCK")
 
     gateway_producer  = build_producer(GATEWAY_KAFKA)
     internal_producer = build_producer(INTERNAL_KAFKA)
@@ -97,6 +135,14 @@ def main():
         args=(conn_pool, internal_producer),
         daemon=True,
         name="recovery",
+    ).start()
+
+    # Failover monitor — detects leader changes and triggers recovery
+    threading.Thread(
+        target=_run_failover_monitor,
+        args=(conn_pool, internal_producer),
+        daemon=True,
+        name="failover-monitor",
     ).start()
 
     logger.info("Stock service started")

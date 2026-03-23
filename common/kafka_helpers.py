@@ -252,11 +252,27 @@ def run_consumer_loop(
     def _process(tp: TopicPartition, offset: int, payload: dict,
                  entry: list) -> None:
         """Process one message: call route_fn, publish response, mark done."""
+        from db_utils import FailoverDetected
+        
         correlation_id = payload.get("correlation_id")
         conn = conn_pool.getconn()
         try:
             result = route_fn(payload, conn)
             logger.info(f"Got result: {result}")
+        except FailoverDetected as exc:
+            logger.warning(
+                "%s failover detected: correlation_id=%s partition=%s offset=%s — republishing message",
+                service_name, correlation_id, tp.partition, offset,
+            )
+            # Republish the message to be reprocessed with a fresh connection
+            try:
+                producer.send(topic, key=payload.get("correlation_id"), value=payload)
+                producer.flush(timeout=5)
+                logger.info("%s republished message after failover: %s", service_name, correlation_id)
+            except Exception as pub_exc:
+                logger.error("%s failed to republish after failover: %s", service_name, pub_exc)
+            # Mark as done to advance the offset (message will be retried if re-sent)
+            result = None
         except Exception as exc:
             logger.error(
                 "%s error: correlation_id=%s partition=%s offset=%s — %s",
