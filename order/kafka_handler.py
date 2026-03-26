@@ -28,10 +28,10 @@ from collections import defaultdict
 
 from common.idempotency import check_idempotency, save_idempotency
 from psycopg2.extras import execute_batch
-from order.db_old import get_order
+from order.db import get_order
 
-import order.tpc_old as tpc_coordinator
-import order.saga_old as saga_coordinator
+import order.tpc as tpc_coordinator
+import order.saga as saga_coordinator
 
 logger = logging.getLogger(__name__)
 

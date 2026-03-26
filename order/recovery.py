@@ -22,7 +22,7 @@ import time
 
 from common.idempotency import save_idempotency
 from common.kafka_helpers import publish_response
-from order.db_old import get_saga_for_update, advance_saga, mark_order_paid
+from order.db import get_saga_for_update, advance_saga, mark_order_paid
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def _send(producer, topic: str, corr_id: str, msg_type: str, body: dict) -> None
 # ---------------------------------------------------------------------------
 
 def _recover_sagas(conn, conn_pool, internal_producer, gateway_producer, age_seconds) -> None:
-    from order.saga_old import SagaState, TERMINAL_STATES
+    from order.saga import SagaState, TERMINAL_STATES
 
     with conn.cursor() as cur:
         cur.execute(
@@ -145,7 +145,7 @@ def _recover_sagas(conn, conn_pool, internal_producer, gateway_producer, age_sec
 # ---------------------------------------------------------------------------
 
 def _recover_tpc(conn, internal_producer, age_seconds) -> None:
-    from order.tpc_old import TpcStatus, TERMINAL_STATUSES
+    from order.tpc import TpcStatus, TERMINAL_STATUSES
 
     with conn.cursor() as cur:
         cur.execute(

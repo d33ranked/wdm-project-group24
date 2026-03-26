@@ -28,10 +28,10 @@ from datetime import datetime
 from common.db import create_conn_pool
 from common.kafka_helpers import build_producer, run_consumer_loop
 
-import order.kafka_handler_old as kafka_handler_old
-import order.tpc_old as tpc_coordinator
-import order.saga_old as saga_coordinator
-import order.recovery_old as recovery_old
+import order.kafka_handler as kafka_handler
+import order.tpc as tpc_coordinator
+import order.saga as saga_coordinator
+import order.recovery as recovery
 
 GATEWAY_KAFKA  = os.environ.get("KAFKA_BOOTSTRAP_SERVERS",          "kafka-external:9092")
 INTERNAL_KAFKA = os.environ.get("INTERNAL_KAFKA_BOOTSTRAP_SERVERS", "kafka-internal:9092")
@@ -137,7 +137,7 @@ def _run_price_lookup_consumer(bootstrap: str) -> None:
 
             for message in consumer:
                 corr_id = message.value.get("correlation_id", "")
-                kafka_handler_old.register_price_lookup_response(
+                kafka_handler.register_price_lookup_response(
                     corr_id, message.value
                 )
 
@@ -159,7 +159,7 @@ def main() -> None:
     internal_producer = build_producer(INTERNAL_KAFKA)
 
     # Inject producers into modules that need them
-    kafka_handler_old._gateway_producer = gateway_producer
+    kafka_handler._gateway_producer = gateway_producer
     tpc_coordinator.init(conn_pool, internal_producer, gateway_producer)
     saga_coordinator.init(conn_pool, internal_producer, gateway_producer)
 
@@ -170,7 +170,7 @@ def main() -> None:
     for attempt in range(1, MAX_RECOVERY_ATTEMPTS + 1):
         try:
             logger.info("Startup recovery attempt %d/%d…", attempt, MAX_RECOVERY_ATTEMPTS)
-            recovery_old.run_once(conn_pool, internal_producer, gateway_producer)
+            recovery.run_once(conn_pool, internal_producer, gateway_producer)
             logger.info("Startup recovery complete — starting consumers")
             break
         except Exception as exc:
@@ -193,7 +193,7 @@ def main() -> None:
             conn_pool, GATEWAY_KAFKA,
             "gateway.orders", "order-service-gateway",
             gateway_producer, "gateway.responses",
-            kafka_handler_old.handle_gateway_message, "Order-Gateway",
+            kafka_handler.handle_gateway_message, "Order-Gateway",
         ),
         daemon=True, name="gateway-consumer",
     ).start()
@@ -214,7 +214,7 @@ def main() -> None:
 
     # Recovery thread — re-drives stale in-flight transactions
     threading.Thread(
-        target=recovery_old.run_recovery_loop,
+        target=recovery.run_recovery_loop,
         args=(conn_pool, internal_producer, gateway_producer),
         daemon=True, name="recovery",
     ).start()

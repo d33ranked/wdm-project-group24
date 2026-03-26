@@ -58,7 +58,7 @@ from collections import defaultdict
 
 from common.idempotency import get_advisory_lock, check_idempotency, save_idempotency
 from common.kafka_helpers import publish_response
-from order.db_old import (
+from order.db import (
     create_saga, get_saga_for_update, advance_saga,
     mark_order_paid, get_order_for_update,
 )
