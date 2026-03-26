@@ -43,7 +43,7 @@ from collections import defaultdict
 
 from common.idempotency import get_advisory_lock, check_idempotency, save_idempotency
 from common.kafka_helpers import publish_response
-from db import (
+from order.db_old import (
     create_transaction, get_txn_for_update, advance_txn,
     mark_order_paid, get_order_for_update,
 )
