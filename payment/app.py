@@ -17,17 +17,17 @@ from common.redis_db import (
     LuaScripts,
 )
 from common.idempotency import check_idempotency_http, save_idempotency_http
+from common.streams import create_bus_pool
 
 TRANSACTION_MODE = os.environ.get("TRANSACTION_MODE", "TPC")
-GATEWAY_KAFKA = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka-external:9092")
-INTERNAL_KAFKA = os.environ.get("INTERNAL_KAFKA_BOOTSTRAP_SERVERS", "kafka-internal:9092")
 
 app = Flask("payment-service")
 logger = logging.getLogger(__name__)
 
-# create redis connection pool
+# create redis connection pool (payment data) and message bus pool
 redis_pool = create_redis_pool("PAYMENT")
 setup_flask_lifecycle(app, redis_pool, "PAYMENT")
+bus_pool = create_bus_pool()
 
 # register all lua scripts once at startup — SHA1-cached in Redis after first call
 _scripts = LuaScripts(redis_lib.Redis(connection_pool=redis_pool))
@@ -134,7 +134,7 @@ with app.app_context():
             print(f"RECOVERY PAYMENT: {e}", flush=True)
 
     elif TRANSACTION_MODE == "SAGA":
-        saga.init(redis_pool, _scripts, GATEWAY_KAFKA, INTERNAL_KAFKA)
+        saga.init(redis_pool, _scripts, bus_pool)
 
         try:
             saga.recovery_saga(redis_pool)
@@ -143,19 +143,17 @@ with app.app_context():
 
         threading.Thread(
             target=saga.start_gateway_consumer,
-            args=(GATEWAY_KAFKA,),
             daemon=True,
             name="gateway-consumer",
         ).start()
 
         threading.Thread(
             target=saga.start_internal_consumer,
-            args=(INTERNAL_KAFKA,),
             daemon=True,
             name="internal-consumer",
         ).start()
 
-        print("SAGA mode: Kafka consumers started", flush=True)
+        print("SAGA mode: Redis Streams consumers started", flush=True)
 
 
 if __name__ == "__main__":

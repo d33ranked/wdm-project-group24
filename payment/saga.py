@@ -1,15 +1,18 @@
-"""Payment SAGA participant — Redis storage, Kafka messaging (Phase 1).
+"""Payment SAGA participant — Redis storage, Redis Streams messaging (Phase 2).
 
-What changed from the PostgreSQL version
------------------------------------------
-- route_kafka_message receives r (redis.Redis) instead of conn (psycopg2 connection).
-- All SQL replaced with hset / hgetall / hexists / hincrby / deduct_credit Lua script.
-- Consumer loops are inlined here (start_gateway_consumer / start_internal_consumer)
-  instead of delegating to the generic run_consumer_loop helper, because that
-  helper uses psycopg2 connection pool semantics (getconn / putconn / rollback).
-
-The Kafka producer/consumer and topic names are UNCHANGED.
-Messaging migration (Kafka → Redis Streams) happens in Phase 2.
+What changed from Phase 1
+--------------------------
+- Kafka producer/consumers replaced with Redis Streams (common.streams).
+- init() now accepts bus_pool (shared redis-bus ConnectionPool) instead of
+  kafka address strings; calls ensure_groups so the consumer groups exist
+  before the loops start.
+- start_gateway_consumer / start_internal_consumer use read_pending_then_new
+  + ack for at-least-once delivery (pending messages are re-delivered on
+  restart automatically).
+- Response publishing uses publish() to gateway.responses / internal.responses
+  instead of Kafka's publish_response().
+- route_stream_message (formerly route_kafka_message) is UNCHANGED — it is
+  pure Redis storage logic with no messaging dependency.
 """
 
 import uuid
@@ -20,47 +23,67 @@ import logging
 import redis as redis_lib
 
 from common.idempotency import check_idempotency_kafka, save_idempotency_kafka
-from common.kafka_helpers import build_producer, publish_response
+from common.streams import (
+    get_bus, ensure_groups, publish, read_pending_then_new, ack,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Topics (unchanged)
+# Stream / group names
 # ---------------------------------------------------------------------------
 
-PAYMENT_GATEWAY_TOPIC   = "gateway.payment"
-PAYMENT_INTERNAL_TOPIC  = "internal.payment"
-GATEWAY_RESPONSE_TOPIC  = "gateway.responses"
-INTERNAL_RESPONSE_TOPIC = "internal.responses"
+GATEWAY_STREAM           = "gateway.payment"
+GATEWAY_RESPONSE_STREAM  = "gateway.responses"
+INTERNAL_STREAM          = "internal.payment"
+INTERNAL_RESPONSE_STREAM = "internal.responses"
+
+GROUP_GATEWAY  = "payment-service"
+GROUP_INTERNAL = "payment-service"
 
 # ---------------------------------------------------------------------------
-# Module State
+# Module state
 # ---------------------------------------------------------------------------
 
-_redis_pool        = None
-_scripts           = None  # LuaScripts instance shared from app.py startup
-_gateway_producer  = None
-_internal_producer = None
+_redis_pool = None   # payment service's own Redis (data storage)
+_bus_pool   = None   # shared redis-bus (messaging)
+_scripts    = None   # LuaScripts instance shared from app.py
 
 
-def init(redis_pool, scripts, gateway_kafka: str, internal_kafka: str):
-    global _redis_pool, _scripts, _gateway_producer, _internal_producer
-    _redis_pool        = redis_pool
-    _scripts           = scripts
-    _gateway_producer  = build_producer(gateway_kafka)
-    _internal_producer = build_producer(internal_kafka)
+def init(redis_pool, scripts, bus_pool):
+    global _redis_pool, _scripts, _bus_pool
+    _redis_pool = redis_pool
+    _scripts    = scripts
+    _bus_pool   = bus_pool
+
+    bus = get_bus(bus_pool)
+    ensure_groups(bus, [
+        (GATEWAY_STREAM,  GROUP_GATEWAY),
+        (INTERNAL_STREAM, GROUP_INTERNAL),
+    ])
 
 
 def _get_r():
-    """Get a Redis client from the pool — one per Kafka message."""
+    """Redis client for payment data (storage Redis)."""
     return redis_lib.Redis(connection_pool=_redis_pool)
 
 
+def _get_bus():
+    """Redis client for the message bus."""
+    return get_bus(_bus_pool)
+
+
 # ---------------------------------------------------------------------------
-# Kafka Message Routing
+# Stream Message Routing
 # ---------------------------------------------------------------------------
 
-def route_kafka_message(payload, r):
+def route_stream_message(payload, r):
+    """Dispatch an inbound stream message to the appropriate handler.
+
+    Identical logic to the old route_kafka_message — the name reflects
+    that messages now arrive via Redis Streams rather than Kafka.
+    Returns (status_code, body).
+    """
     method   = payload.get("method", "GET").upper()
     path     = payload.get("path", "/")
     headers  = payload.get("headers") or {}
@@ -135,85 +158,85 @@ def route_kafka_message(payload, r):
 
 
 # ---------------------------------------------------------------------------
-# Kafka Consumer Loops
+# Redis Streams Consumer Loops
 # ---------------------------------------------------------------------------
 
-def start_gateway_consumer(gateway_kafka: str):
-    import kafka
+def _publish_response(response_stream: str, correlation_id: str,
+                      status_code: int, body):
+    """Publish a response back to the caller via the appropriate stream."""
+    publish(_get_bus(), response_stream, {
+        "correlation_id": correlation_id,
+        "status_code":    status_code,
+        "body":           body,
+    })
+
+
+def start_gateway_consumer():
+    """Consume messages from gateway.payment and reply on gateway.responses.
+
+    Called from app.py in a daemon thread when TRANSACTION_MODE=SAGA.
+
+    Delivery guarantee: at-least-once.
+    - read_pending_then_new re-delivers any messages that were processed
+      but not yet ACKed before a crash.
+    - ack() is called only after the response has been published, so a crash
+      between processing and ack causes the message to be re-processed on
+      restart (handlers are idempotent via the idempotency key mechanism).
+    """
+    logger.info("Payment gateway consumer started on stream '%s'", GATEWAY_STREAM)
     while True:
         try:
-            consumer = kafka.KafkaConsumer(
-                PAYMENT_GATEWAY_TOPIC,
-                bootstrap_servers=gateway_kafka,
-                group_id="payment-service-gateway",
-                auto_offset_reset="earliest",
-                enable_auto_commit=False,
-                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-            )
-            logger.info("Payment gateway consumer started on '%s'", PAYMENT_GATEWAY_TOPIC)
-
-            for message in consumer:
-                payload        = message.value
+            bus = _get_bus()
+            for msg_id, payload in read_pending_then_new(bus, GATEWAY_STREAM, GROUP_GATEWAY):
                 correlation_id = payload.get("correlation_id")
                 if not correlation_id:
-                    try: consumer.commit()
-                    except Exception: pass
+                    ack(bus, GATEWAY_STREAM, GROUP_GATEWAY, msg_id)
                     continue
 
                 r = _get_r()
                 try:
-                    status_code, body = route_kafka_message(payload, r)
+                    status_code, body = route_stream_message(payload, r)
                 except Exception as exc:
                     logger.error("Error processing %s: %s", correlation_id, exc, exc_info=True)
-                    status_code, body = 500, {"error": "Internal server error"}
+                    status_code, body = 400, {"error": "Internal server error"}
 
-                publish_response(_gateway_producer, GATEWAY_RESPONSE_TOPIC,
-                                 correlation_id, status_code, body)
-                try: consumer.commit()
-                except Exception: pass
+                _publish_response(GATEWAY_RESPONSE_STREAM, correlation_id, status_code, body)
+                ack(bus, GATEWAY_STREAM, GROUP_GATEWAY, msg_id)
 
         except Exception as exc:
-            logger.error("Payment gateway consumer crashed, reconnecting in 3s: %s", exc)
-            time.sleep(3)
+            logger.error("Payment gateway consumer error, retrying in 1s: %s", exc)
+            time.sleep(1)
 
 
-def start_internal_consumer(internal_kafka: str):
-    import kafka
+def start_internal_consumer():
+    """Consume messages from internal.payment and reply on internal.responses.
+
+    Called from app.py in a daemon thread when TRANSACTION_MODE=SAGA.
+    Identical delivery contract to start_gateway_consumer above.
+    """
+    logger.info("Payment internal consumer started on stream '%s'", INTERNAL_STREAM)
     while True:
         try:
-            consumer = kafka.KafkaConsumer(
-                PAYMENT_INTERNAL_TOPIC,
-                bootstrap_servers=internal_kafka,
-                group_id="payment-service-internal",
-                auto_offset_reset="earliest",
-                enable_auto_commit=False,
-                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-            )
-            logger.info("Payment internal consumer started on '%s'", PAYMENT_INTERNAL_TOPIC)
-
-            for message in consumer:
-                payload        = message.value
+            bus = _get_bus()
+            for msg_id, payload in read_pending_then_new(bus, INTERNAL_STREAM, GROUP_INTERNAL):
                 correlation_id = payload.get("correlation_id")
                 if not correlation_id:
-                    try: consumer.commit()
-                    except Exception: pass
+                    ack(bus, INTERNAL_STREAM, GROUP_INTERNAL, msg_id)
                     continue
 
                 r = _get_r()
                 try:
-                    status_code, body = route_kafka_message(payload, r)
+                    status_code, body = route_stream_message(payload, r)
                 except Exception as exc:
                     logger.error("Error processing %s: %s", correlation_id, exc, exc_info=True)
-                    status_code, body = 500, {"error": "Internal server error"}
+                    status_code, body = 400, {"error": "Internal server error"}
 
-                publish_response(_internal_producer, INTERNAL_RESPONSE_TOPIC,
-                                 correlation_id, status_code, body)
-                try: consumer.commit()
-                except Exception: pass
+                _publish_response(INTERNAL_RESPONSE_STREAM, correlation_id, status_code, body)
+                ack(bus, INTERNAL_STREAM, GROUP_INTERNAL, msg_id)
 
         except Exception as exc:
-            logger.error("Payment internal consumer crashed, reconnecting in 3s: %s", exc)
-            time.sleep(3)
+            logger.error("Payment internal consumer error, retrying in 1s: %s", exc)
+            time.sleep(1)
 
 
 # ---------------------------------------------------------------------------

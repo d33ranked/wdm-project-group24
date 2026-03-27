@@ -20,22 +20,20 @@ from common.redis_db import (
     setup_flask_lifecycle,
     setup_gunicorn_logging,
 )
+from common.streams import create_bus_pool
 
 # extract environment variables
 TRANSACTION_MODE = os.environ.get("TRANSACTION_MODE", "TPC")
-GATEWAY_KAFKA = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka-external:9092")
-INTERNAL_KAFKA = os.environ.get(
-    "INTERNAL_KAFKA_BOOTSTRAP_SERVERS", "kafka-internal:9092"
-)
 STOCK_SERVICE_URL = os.environ.get("STOCK_SERVICE_URL", "http://stock-service:5000")
 
 # flask app
 app = Flask("order-service")
 logger = logging.getLogger(__name__)
 
-# create redis connection pool
+# create redis connection pool (order data) and message bus pool
 redis_pool = create_redis_pool("ORDER")
 setup_flask_lifecycle(app, redis_pool, "ORDER")
+bus_pool = create_bus_pool()
 
 
 # log request duration
@@ -198,7 +196,7 @@ with app.app_context():
             print(f"RECOVERY ORDER TPC: {e}", flush=True)
 
     elif TRANSACTION_MODE == "SAGA":
-        saga.init(redis_pool, GATEWAY_KAFKA, INTERNAL_KAFKA)
+        saga.init(redis_pool, bus_pool)
 
         try:
             saga.recovery_saga(redis_pool)
@@ -207,19 +205,17 @@ with app.app_context():
 
         threading.Thread(
             target=saga.start_gateway_consumer,
-            args=(GATEWAY_KAFKA,),
             daemon=True,
             name="gateway-consumer",
         ).start()
 
         threading.Thread(
             target=saga.start_internal_consumer,
-            args=(INTERNAL_KAFKA,),
             daemon=True,
             name="internal-consumer",
         ).start()
 
-        print("SAGA mode: Kafka consumers started", flush=True)
+        print("SAGA mode: Redis Streams consumers started", flush=True)
 
 
 if __name__ == "__main__":

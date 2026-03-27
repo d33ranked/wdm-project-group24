@@ -2,4 +2,3 @@ redis==5.2.1
 Flask==3.0.2
 gevent==24.2.1
 gunicorn==21.2.0
-kafka-python==2.3.0

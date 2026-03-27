@@ -281,11 +281,13 @@ def main():
     wait_for_services()
 
     # --- Collect tests ---
-    common_tests = collect_tests("test_common")
-    mode_tests = (
+    common_tests  = collect_tests("test_common")
+    phase1_tests  = collect_tests("test_phase1_redis")
+    mode_tests    = (
         collect_tests("test_tpc") if mode == "TPC" else collect_tests("test_sagas")
     )
-    mode_label = "2PC (Two-Phase Commit)" if mode == "TPC" else "SAGA"
+    phase2_tests  = [] if mode == "TPC" else collect_tests("test_phase2_streams")
+    mode_label    = "2PC (Two-Phase Commit)" if mode == "TPC" else "SAGA"
 
     # --- Run ---
     total_pass, total_fail = 0, 0
@@ -294,10 +296,24 @@ def main():
     total_pass += p
     total_fail += f
 
-    if common_tests and mode_tests:
+    if common_tests and phase1_tests:
+        wait_for_enter()
+
+    p, f = run_suite("Phase 1 — Redis Storage Test Suite", phase1_tests)
+    total_pass += p
+    total_fail += f
+
+    if phase1_tests and mode_tests:
         wait_for_enter()
 
     p, f = run_suite(f"{mode_label} Test Suite", mode_tests)
+    total_pass += p
+    total_fail += f
+
+    if mode_tests and phase2_tests:
+        wait_for_enter()
+
+    p, f = run_suite("Phase 2 — Redis Streams Test Suite (SAGA Only)", phase2_tests)
     total_pass += p
     total_fail += f
 
