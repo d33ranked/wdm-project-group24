@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 
-from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_sql, wait_for_service
+from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_redis, wait_for_service
 
 
 # ---------------------------------------------------------------------------
@@ -371,8 +371,8 @@ def test_coordinator_crash_recovery():
     STOCK = 10
     CREDIT = 200
     ORDER_CONTAINER = "wdm-project-group24-order-service-1"
-    ORDER_DB = "wdm-project-group24-order-db-1"
-    STOCK_DB = "wdm-project-group24-stock-db-1"
+    ORDER_DB = "wdm-project-group24-redis-order-1"
+    STOCK_DB = "wdm-project-group24-redis-stock-1"
 
     # 1. Create resources via API
     user = json_field(api("POST", "/payment/create_user"), "user_id")
@@ -383,27 +383,27 @@ def test_coordinator_crash_recovery():
     api("POST", f"/orders/addItem/{order}/{item}/{ITEM_QTY}")
 
     txn_id = f"recovery-test-{uuid.uuid4()}"
-    prepared_stock = json.dumps([{"item_id": item, "quantity": ITEM_QTY}])
+    # prepared_stock stored as [[item_id, quantity], ...] — matches order/tpc.py format
+    prepared_stock = json.dumps([[item, ITEM_QTY]])
 
-    # 2. Inject stuck state directly into DBs — simulates coordinator crashed
+    # 2. Inject stuck state directly into Redis — simulates coordinator crashed
     #    after stock PREPARE succeeded but before payment PREPARE was sent.
-    #    Stock: deduct units and record prepared_transaction (as PREPARE does).
-    docker_exec_sql(
-        STOCK_DB, "stock",
-        f"UPDATE items SET stock = stock - {ITEM_QTY} WHERE id = '{item}';"
-    )
-    docker_exec_sql(
-        STOCK_DB, "stock",
-        f"INSERT INTO prepared_transactions (txn_id, item_id, quantity) "
-        f"VALUES ('{txn_id}', '{item}', {ITEM_QTY});"
-    )
-    #    Order: insert a transaction_log row stuck in 'preparing_payment'.
-    docker_exec_sql(
-        ORDER_DB, "orders",
-        f"INSERT INTO transaction_log "
-        f"(txn_id, order_id, status, prepared_stock, prepared_payment, user_id, total_cost) "
-        f"VALUES ('{txn_id}', '{order}', 'preparing_payment', "
-        f"'{prepared_stock}', FALSE, '{user}', {ITEM_PRICE * ITEM_QTY});"
+    #
+    #    Stock Redis: deduct units (as PREPARE does via deduct_stock_batch Lua)
+    #    and write the reservation hash with TTL (as prepare_stock_batch Lua does).
+    docker_exec_redis(STOCK_DB, "HINCRBY", f"item:{item}", "stock", str(-ITEM_QTY))
+    docker_exec_redis(STOCK_DB, "HSET", f"prepared:stock:{txn_id}", item, str(ITEM_QTY))
+    docker_exec_redis(STOCK_DB, "EXPIRE", f"prepared:stock:{txn_id}", "600")
+    #    Order Redis: write a txn:* hash stuck in 'preparing_payment'.
+    docker_exec_redis(
+        ORDER_DB,
+        "HSET", f"txn:{txn_id}",
+        "order_id",       order,
+        "status",         "preparing_payment",
+        "prepared_stock", prepared_stock,
+        "prepared_payment", "false",
+        "user_id",        user,
+        "total_cost",     str(ITEM_PRICE * ITEM_QTY),
     )
 
     check(

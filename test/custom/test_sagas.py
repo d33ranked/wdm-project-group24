@@ -11,7 +11,7 @@ import subprocess
 import time
 import uuid
 
-from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_sql, wait_for_service
+from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_redis, wait_for_service
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +138,8 @@ def test_coordinator_crash_recovery():
     STOCK = 10
     CREDIT = 200
     ORDER_CONTAINER = "wdm-project-group24-order-service-1"
-    ORDER_DB = "wdm-project-group24-order-db-1"
-    STOCK_DB = "wdm-project-group24-stock-db-1"
+    ORDER_DB = "wdm-project-group24-redis-order-1"
+    STOCK_DB = "wdm-project-group24-redis-stock-1"
 
     user = json_field(api("POST", "/payment/create_user"), "user_id")
     api("POST", f"/payment/add_funds/{user}/{CREDIT}")
@@ -151,22 +151,34 @@ def test_coordinator_crash_recovery():
     docker_cmd(f"docker stop {ORDER_CONTAINER}")
 
     saga_id = str(uuid.uuid4())
+    # items_quantities stored as {item_id: qty} dict — matches order/db.py format
     items_quantities = json.dumps({item: ITEM_QTY})
     stock_idem_key = f"{saga_id}:stock:subtract_batch"
     new_stock = STOCK - ITEM_QTY
     cached_body = json.dumps({"updated_stock": {item: new_stock}})
 
-    docker_exec_sql(ORDER_DB, "orders",
-        f"INSERT INTO sagas (id, order_id, state, items_quantities, "
-        f"original_correlation_id) VALUES "
-        f"('{saga_id}', '{order}', 'STOCK_REQUESTED', '{items_quantities}', 'recovery-test')")
+    # Order Redis: write a saga:* hash in STOCK_REQUESTED state
+    docker_exec_redis(
+        ORDER_DB,
+        "HSET", f"saga:{saga_id}",
+        "order_id",                order,
+        "state",                   "STOCK_REQUESTED",
+        "items_quantities",        items_quantities,
+        "original_correlation_id", "recovery-test",
+        "idempotency_key",         "",
+    )
 
-    docker_exec_sql(STOCK_DB, "stock",
-        f"UPDATE items SET stock = stock - {ITEM_QTY} WHERE id = '{item}'")
+    # Stock Redis: deduct units (simulates stock subtract_batch already ran)
+    docker_exec_redis(STOCK_DB, "HINCRBY", f"item:{item}", "stock", str(-ITEM_QTY))
 
-    docker_exec_sql(STOCK_DB, "stock",
-        f"INSERT INTO idempotency_keys (key, status_code, body) VALUES "
-        f"('{stock_idem_key}', 200, '{cached_body}')")
+    # Stock Redis: write idempotency key so recovery re-publish is a no-op for stock
+    docker_exec_redis(
+        STOCK_DB,
+        "HSET", f"idem:{stock_idem_key}",
+        "status_code", "200",
+        "body",        cached_body,
+    )
+    docker_exec_redis(STOCK_DB, "EXPIRE", f"idem:{stock_idem_key}", "3600")
 
     docker_cmd(f"docker start {ORDER_CONTAINER}")
 
