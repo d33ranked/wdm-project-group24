@@ -68,7 +68,7 @@ def _xreadgroup(bus, stream, group, start_id, block):
             group,
             CONSUMER_NAME,
             {stream: start_id},
-            count=10,
+            count=100,
             block=BLOCK_MS if block else None,
         )
     except redis_lib.exceptions.ResponseError as exc:

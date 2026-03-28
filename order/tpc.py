@@ -116,6 +116,12 @@ def _send(stream: str, payload: dict, correlation_id: str) -> dict:
     return _tpc_client.send(stream, payload, correlation_id)
 
 
+def _publish(stream: str, payload: dict):
+    # fire-and-forget: publish without waiting for a response (used for final commits/aborts)
+    bus = get_bus(_tpc_client._pool)
+    publish(bus, stream, payload)
+
+
 # http helper — used only for addItem price lookup (stock find, not tpc)
 def send_get_request(url):
     try:
@@ -185,29 +191,26 @@ def _get_txn(r, txn_id: str) -> dict | None:
 
 
 def commit_tpc(txn_id, prepared_stock, prepared_payment):
-    # send commit to stock and/or payment via streams
+    # fire-and-forget: committing status is already persisted (aof); decision is final
+    # at-least-once delivery + idempotent lua scripts ensure participants always commit
     if prepared_stock:
-        corr_id = f"{txn_id}:stock:commit"
-        _send(
+        _publish(
             TPC_STOCK_STREAM,
             {
-                "correlation_id": corr_id,
+                "correlation_id": f"{txn_id}:stock:commit",
                 "command": "commit",
                 "txn_id": txn_id,
             },
-            corr_id,
         )
 
     if prepared_payment:
-        corr_id = f"{txn_id}:payment:commit"
-        _send(
+        _publish(
             TPC_PAYMENT_STREAM,
             {
-                "correlation_id": corr_id,
+                "correlation_id": f"{txn_id}:payment:commit",
                 "command": "commit",
                 "txn_id": txn_id,
             },
-            corr_id,
         )
 
 
