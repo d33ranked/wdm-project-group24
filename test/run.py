@@ -89,6 +89,27 @@ def docker_exec_redis(container: str, *cmd_args):
     )
 
 
+def get_redis_master_container(master_name: str) -> str:
+    # ask sentinel-1 which container is currently master for master_name.
+    # with announce-hostnames yes, sentinel returns the service hostname
+    # (e.g. "redis-stock-replica") after a failover, not the original primary.
+    # falls back to the original primary container if sentinel is unreachable.
+    result = subprocess.run(
+        [
+            "docker", "exec", "wdm-project-group24-sentinel-1-1",
+            "redis-cli", "-p", "26379",
+            "SENTINEL", "GET-MASTER-ADDR-BY-NAME", master_name,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    lines = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
+    if lines:
+        hostname = lines[0]  # e.g. "redis-stock" or "redis-stock-replica"
+        return f"wdm-project-group24-{hostname}-1"
+    return f"wdm-project-group24-{master_name}-1"
+
+
 def wait_for_service(probe_path: str, timeout: int = 60):
     # poll until endpoint returns non-5xx
     start = time.time()
@@ -236,14 +257,16 @@ def main():
     total_pass += p
     total_fail += f
 
-    p, f = run_suite("REPLICATION SUITE", "test_replication")
-    total_pass += p
-    total_fail += f
-
     if MODE == "TPC":
         p, f = run_suite("TWO PHASE COMMIT SUITE", "test_tpc")
     else:
         p, f = run_suite("SAGA SUITE", "test_sagas")
+    total_pass += p
+    total_fail += f
+
+    # replication suite runs last — it kills primaries and changes sentinel topology,
+    # which would break direct-redis writes in earlier suites if run first
+    p, f = run_suite("REPLICATION SUITE", "test_replication")
     total_pass += p
     total_fail += f
 

@@ -6,7 +6,7 @@ import subprocess
 import time
 import uuid
 
-from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_redis, wait_for_service
+from run import api, check, json_field, PROJECT_ROOT, docker_cmd, docker_exec_redis, get_redis_master_container, wait_for_service
 
 
 def test_compensation_payment_fails():
@@ -111,8 +111,8 @@ def test_coordinator_crash_recovery():
     STOCK           = 10
     CREDIT          = 200
     ORDER_CONTAINER = "wdm-project-group24-order-service-1"
-    ORDER_DB        = "wdm-project-group24-redis-order-1"
-    STOCK_DB        = "wdm-project-group24-redis-stock-1"
+    ORDER_DB        = get_redis_master_container("redis-order")
+    STOCK_DB        = get_redis_master_container("redis-stock")
 
     user  = json_field(api("POST", "/payment/create_user"), "user_id")
     api("POST", f"/payment/add_funds/{user}/{CREDIT}")

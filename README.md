@@ -1,61 +1,6 @@
-# Distributed Data Systems — Group 24
+# Distributed Data Systems — Group 20
 
 Aditya Patil · Danil Vorotilov · Pedro Gomes Moreira · Ruben Van Seventer · Veselin Mitev
-
-Three microservices (order, stock, payment) coordinate checkouts so that stock is never oversold and users are never double-charged. Two protocols are implemented: **2PC** for synchronous strongly-consistent commits, and **SAGA** for asynchronous event-driven compensation. Both expose the same HTTP API. The active protocol is selected at deploy time.
-
----
-
-## Architecture
-
-### Services
-
-| Service | Responsibility |
-|---|---|
-| `nginx` (port 8000) | Public entry point; routes requests to services or gateway |
-| `api-gateway` (port 8001) | SAGA mode only — assigns `correlation_id`, bridges HTTP to streams |
-| `order-service` | Manages orders; drives checkout as 2PC coordinator or SAGA orchestrator |
-| `stock-service` | Manages inventory; 2PC/SAGA participant |
-| `payment-service` | Manages user credit; 2PC/SAGA participant |
-
-### Storage
-
-Each service has a dedicated Redis instance with AOF persistence (`appendfsync everysec`):
-
-- `redis-order` — orders, TPC transaction log (`txn:*`), SAGA state (`saga:*`)
-- `redis-stock` — item hashes, prepared stock reservations
-- `redis-payment` — user hashes, prepared payment reservations
-- `redis-bus` — shared message bus; kept separate so crashing a service's Redis does not drop in-flight stream messages
-
-### Inter-service Communication
-
-All inter-service calls go through **Redis Streams**, not HTTP. This gives at-least-once delivery — consumers re-read unACKed (pending) messages on startup before processing new ones.
-
-```
-TPC mode:   tpc.stock / tpc.payment → tpc.responses
-SAGA mode:  gateway.{orders,stock,payment} → gateway.responses
-            internal.{stock,payment} → internal.responses
-```
-
-### 2PC Protocol
-
-1. **Prepare** — coordinator publishes to `tpc.stock` and `tpc.payment`. Each participant runs a Lua script that checks availability, deducts optimistically, and writes a `prepared:{service}:{txn_id}` reservation key (600s TTL).
-2. **Commit** — both vote YES → coordinator fires commit to both (fire-and-forget; decision is final once written to AOF). Participants drop the reservation key.
-3. **Abort** — either votes NO → coordinator aborts both; participants restore deducted amounts from the reservation key.
-
-A checkout lock (`checkout-lock:{order_id}`) prevents concurrent duplicate checkouts. `recovery_tpc()` runs at startup: `committing` → re-commit, anything else → abort.
-
-### SAGA Protocol
-
-Orchestrator state machine: `PENDING → STOCK_REQUESTED → PAYMENT_REQUESTED → COMPLETED` (or compensation path → `FAILED`).
-
-1. Publishes `subtract_batch` to `internal.stock`. On success, publishes `pay` to `internal.payment`.
-2. If payment fails, publishes `add_batch` (compensating transaction) to `internal.stock`.
-3. State persisted in `saga:{saga_id}`; `recovery_saga()` resumes or compensates after a coordinator crash.
-
-### Atomicity
-
-All read-modify-write operations are implemented as **Lua scripts** registered at startup (SHA1-cached). This includes stock reservation, payment reservation, commit, abort, and compensation. Scripts return sentinel strings (`INSUFFICIENT`, `NOT_FOUND`) on failure so the caller can act without a second round trip.
 
 ---
 
@@ -64,7 +9,7 @@ All read-modify-write operations are implemented as **Lua scripts** registered a
 ### Requirements
 
 - Docker + Docker Compose
-- Python 3.11+ (test suite only)
+- Python 3.11+ (test runner only)
 
 ### Start
 
@@ -82,16 +27,20 @@ TRANSACTION_MODE=SAGA NGINX_CONF=gateway_nginx_saga.conf docker compose up -d --
 docker compose down -v
 ```
 
-### Configuration
+---
 
-These can be passed as env vars before `docker compose up` or written to a `.env` file:
+## Configuration
 
-| Variable | Default | Effect |
-|---|---|---|
-| `TRANSACTION_MODE` | `TPC` | Protocol used by all three services (`TPC` or `SAGA`) |
-| `NGINX_CONF` | `gateway_nginx.conf` | Nginx routing config (use `gateway_nginx_saga.conf` for SAGA) |
-| `REDIS_MAX_CONNECTIONS` | `6000` | Connection pool size per Redis pool per service; sized for 5000+ concurrent users |
-| `STREAM_BATCH_SIZE` | `500` | Messages pulled per `XREADGROUP` call; processed concurrently via gevent |
+Pass as environment variables before `docker compose up`, or write to a `.env` file at the project root.
+
+
+| Variable                | Default              | Description                                                                                            |
+| ----------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ |
+| `TRANSACTION_MODE`      | `TPC`                | Protocol used by all services. `TPC` for two-phase commit, `SAGA` for event-driven compensation.       |
+| `NGINX_CONF`            | `gateway_nginx.conf` | Nginx routing config. Must be `gateway_nginx_saga.conf` when `TRANSACTION_MODE=SAGA`.                  |
+| `REDIS_MAX_CONNECTIONS` | `6000`               | Connection pool size per Redis pool per service worker. Size for expected peak concurrency.            |
+| `STREAM_BATCH_SIZE`     | `500`                | Messages fetched per `XREADGROUP` call. All messages in a batch are processed concurrently via gevent. |
+
 
 Example `.env` for a smaller local machine:
 
@@ -104,43 +53,118 @@ STREAM_BATCH_SIZE=100
 
 ## Test Suite
 
-Located in `test/custom/`. Standalone CLI — no external test framework. Starts the stack, runs all cases, reports results.
+The test suite is in `test/`. It is a standalone CLI — no external test framework. It builds the stack, runs all cases, and reports results.
 
 ### Run
 
 ```bash
-cd test/custom
-pip install -r ../../requirements.txt
+cd test
+pip install -r ../requirements.txt
 
-python run.py                                    # TPC, full build + restart
+python run.py                                    # TPC mode, full build and fresh stack
 python run.py --mode SAGA                        # SAGA mode
-python run.py --skip-build --no-restart          # reuse already-running stack
+python run.py --skip-build                       # skip docker compose build
+python run.py --no-restart                       # reuse an already-running stack
 BASE_URL=http://192.168.1.10:8000 python run.py  # custom gateway address
 ```
 
-### Structure
+### Suite Order
 
-| File | Cases | Covers |
-|---|---|---|
-| `test_common.py` | 29 | Checkout correctness, concurrency, boundary conditions, idempotency, fault injection |
-| `test_tpc.py` | 12 | 2PC prepare/commit/abort, locking, coordinator and participant crash recovery |
-| `test_sagas.py` | 8 | Compensation, double-checkout prevention, stream re-delivery, coordinator recovery |
+The runner executes suites in this order:
 
-Each test prefixes its output with a **blue container label** indicating which service to inspect on failure:
+1. **Common** — mode-agnostic correctness and durability
+2. **2PC or SAGA** — protocol-specific correctness (selected by `--mode`)
+3. **Replication** — Sentinel failover and data durability (runs last because it changes cluster topology)
 
-```
-[1/29] [order-service] Multi-Item Checkout With Per-Item Stock Verification
-  [PASS] Checkout Succeeds For An Order Containing Three Different Items
-  [PASS] Item Stock Decreased By The Correct Quantity
+---
 
-[2/29] [redis-bus] Malformed Stream Message: Consumer Survives And Continues
-  [PASS] Consumer Processes Next Valid Message After Malformed Entry
-```
+## Test Cases
 
-### What Each Suite Proves
+### Common Suite
 
-**Common (29)** — checkout never oversells or double-charges across normal, boundary, and concurrent cases; idempotency keys prevent duplicate mutations; AOF durability survives Redis restarts; consumers survive malformed messages and service crashes.
 
-**2PC (12)** — prepare/commit/abort are individually correct and idempotent; competing prepares on the same resource correctly yield one YES and one NO; the coordinator correctly aborts all participants when any one votes NO; crash recovery deterministically resolves all in-doubt transactions.
+| Test                               | What It Verifies                                                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Multi-Item Checkout                | A checkout containing multiple distinct items deducts the correct quantity from each item's stock and charges the exact total. |
+| Double Checkout                    | A second checkout on an already-paid order is a no-op — no duplicate stock deduction or charge.                                |
+| Post-Checkout Tampering            | Adding items to a paid order and retrying checkout produces no extra charge and no stock deduction.                            |
+| Empty Order Checkout               | Checking out an order with no items returns 200 without crashing any service.                                                  |
+| 10 Concurrent Checkouts For 1 Unit | Ten users race to buy the last unit; exactly one succeeds and stock never goes negative.                                       |
+| Sequential Drain                   | Sequential checkouts exhaust stock in order; the request that would exceed available stock is rejected.                        |
+| 5 Independent Parallel Checkouts   | Five isolated concurrent checkouts each succeed without interfering with each other.                                           |
+| External Stock Change              | Reducing stock between order creation and checkout causes the checkout to fail correctly.                                      |
+| Fund User After Order              | Adding sufficient credit after order creation but before checkout allows the checkout to succeed.                              |
+| Balance Exactly Equals Total       | Checkout succeeds when the user's credit equals the order cost exactly.                                                        |
+| Stock Exactly Equals Quantity      | Checkout succeeds when available stock equals the ordered quantity exactly.                                                    |
+| One Credit Short                   | Checkout is rejected when the user is exactly one credit unit below the required amount.                                       |
+| One Stock Unit Short               | Checkout is rejected when stock is exactly one unit below the ordered quantity.                                                |
+| Non-Existent Resource Lookup       | GET requests for random or non-existent IDs return 4xx, not 5xx.                                                               |
+| addItem Idempotency                | Sending the same add-item request twice with the same idempotency key applies the change only once.                            |
+| Partial Stock Failure              | If any item in a multi-item batch is out of stock, the entire checkout fails atomically — no partial deductions.               |
+| Batch Init                         | `batch_init` creates integer-keyed items and users that are immediately readable via the API.                                  |
+| Add-Stock Idempotency              | Duplicate add-stock requests with the same idempotency key do not double the stock.                                            |
+| Pay Idempotency                    | Duplicate add-funds requests with the same idempotency key do not double the credit.                                           |
+| Order Item Merge                   | Adding the same item to an order twice merges the quantities into a single line item.                                          |
+| Zero/Negative Amount Rejected      | `add_stock` and `add_funds` reject amounts ≤ 0 with a 4xx response.                                                            |
+| Item Not Found Subtract            | Subtracting stock from a non-existent item returns 4xx, not 5xx.                                                               |
+| User Not Found Pay                 | Charging a non-existent user returns 4xx, not 5xx.                                                                             |
+| Malformed Stream Message           | A garbage message injected directly into the stream does not crash consumers; the next valid request succeeds.                 |
+| Payment Redis AOF Durability       | Credit written to Redis survives a container restart; checkout succeeds after the restart.                                     |
+| Stock Redis AOF Durability         | Stock written to Redis survives a container restart; checkout succeeds after the restart.                                      |
+| Concurrent Oversell Prevention     | 20 users racing to buy 3 units result in exactly 3 successful checkouts and exactly 3 charges — no oversell.                   |
+| Stock Service Crash Mid-Batch      | Killing and restarting the stock service during a concurrent batch produces no oversell and no phantom charges.                |
+| Redis Bus Restart Recovery         | Restarting the shared message bus does not prevent subsequent checkouts from completing.                                       |
 
-**SAGA (8)** — compensating transactions fully restore state when payment fails; correlation IDs correctly isolate concurrent checkouts; pending stream messages survive service restarts and are re-delivered; stuck sagas are resolved by recovery on restart.
+
+---
+
+### 2PC Suite
+
+
+| Test                       | What It Verifies                                                                                                        |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| PREPARE → COMMIT           | PREPARE holds the reservation and reduces visible stock/credit; COMMIT makes the deduction permanent.                   |
+| PREPARE → ABORT            | PREPARE holds the reservation; ABORT returns all reserved resources to their original values.                           |
+| Vote NO                    | PREPARE for more than available is rejected with 4xx; no reservation is made and nothing changes.                       |
+| PREPARE Locks Resources    | A PREPARE-held reservation is unavailable to concurrent regular subtract operations.                                    |
+| ABORT Releases Resources   | After ABORT, the previously locked resources are available for new operations.                                          |
+| Competing PREPAREs         | Two concurrent PREPAREs on the same insufficient stock — the first wins, the second votes NO.                           |
+| Idempotent COMMIT          | Calling COMMIT twice on the same transaction produces no double deduction.                                              |
+| ABORT Safety               | ABORT on a non-existent or already-committed transaction returns 200 and changes nothing.                               |
+| Stock Votes NO             | When stock cannot fulfil, the coordinator aborts the entire checkout — payment is untouched.                            |
+| Payment Votes NO           | When payment cannot fulfil, the coordinator aborts and fully reverses the stock reservation.                            |
+| Participant Crash Recovery | Stock service killed mid-checkout restarts and the coordinator successfully retries the operation.                      |
+| Coordinator Crash Recovery | A stuck in-doubt transaction injected directly into the log is deterministically resolved by `recovery_tpc` on restart. |
+
+
+---
+
+### SAGA Suite
+
+
+| Test                             | What It Verifies                                                                                                                        |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Compensating Transaction         | Stock is reserved, then payment fails; the saga fires a compensating transaction that fully restores stock.                             |
+| Stock Fails, No Payment          | Immediate stock failure causes early rejection — the payment step is never attempted.                                                   |
+| Participant Crash Recovery       | Stock service killed mid-saga; the stream's pending re-delivery mechanism completes the saga after restart.                             |
+| Coordinator Crash Recovery       | A stuck `STOCK_REQUESTED` saga injected into the log is consistently resolved (committed or compensated) by `recovery_saga` on restart. |
+| Double-Checkout Prevention       | A second checkout on an already-paid order is detected and skipped; stock and credit are unchanged.                                     |
+| Multi-Item Compensation          | All items from a failed multi-item checkout are fully restored by the compensating transaction — no partial rollback.                   |
+| Concurrent Correlation Isolation | 20 simultaneous checkouts each receive the correct, isolated response via their correlation ID.                                         |
+| Pending-Message Re-Delivery      | A stream message left unACKed due to a service crash is re-delivered and processed correctly after restart.                             |
+
+
+---
+
+### Replication Suite
+
+
+| Test                                | What It Verifies                                                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Payment Primary SIGKILL             | Data written before a hard kill of the payment primary survives on the promoted replica; checkouts continue through the new master.   |
+| Coordinator DB SIGKILL Mid-Checkout | Killing the order-service's Redis mid-checkout and restarting order-service resolves the transaction consistently with no data loss.  |
+| Bus Primary SIGKILL With In-Flight  | Killing the message bus during 10 concurrent checkouts results in no phantom charges or oversell after Sentinel promotes the replica. |
+| One Sentinel Down                   | Killing one of three sentinels still leaves quorum intact; a subsequent primary failure is correctly failed over.                     |
+| 50 Writes Before Primary SIGKILL    | All 50 items written to a primary before a hard kill are readable from the promoted replica — zero data loss on promotion.            |
+
+
