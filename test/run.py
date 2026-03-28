@@ -11,8 +11,8 @@ import time
 
 import requests
 
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
@@ -22,12 +22,12 @@ if __name__ == "__main__":
     sys.modules["run"] = sys.modules["__main__"]
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
-MODE     = "TPC"   # set by main() before any suite runs
+MODE = "TPC"  # set by main() before any suite runs
 
 # --- ansi colours ---
-_BLUE  = "\033[94m"
+_BLUE = "\033[94m"
 _GREEN = "\033[92m"
-_RED   = "\033[91m"
+_RED = "\033[91m"
 _RESET = "\033[0m"
 
 # --- pass/fail counters ---
@@ -72,8 +72,11 @@ def json_field(response, key):
 def docker_cmd(cmd: str):
     # run docker command silently
     subprocess.run(
-        cmd, shell=True, cwd=PROJECT_ROOT,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cmd,
+        shell=True,
+        cwd=PROJECT_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -81,7 +84,8 @@ def docker_exec_redis(container: str, *cmd_args):
     # execute redis-cli inside container; args passed directly, no shell splitting
     subprocess.run(
         ["docker", "exec", container, "redis-cli"] + list(cmd_args),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -101,11 +105,14 @@ def wait_for_service(probe_path: str, timeout: int = 60):
 
 # --- docker stack ---
 
+
 def _compose_env(mode: str) -> dict:
     # build subprocess env with mode-specific vars, inheriting host env
     env = os.environ.copy()
     env["TRANSACTION_MODE"] = mode
-    env["NGINX_CONF"] = "gateway_nginx_saga.conf" if mode == "SAGA" else "gateway_nginx.conf"
+    env["NGINX_CONF"] = (
+        "gateway_nginx_saga.conf" if mode == "SAGA" else "gateway_nginx.conf"
+    )
     return env
 
 
@@ -113,7 +120,10 @@ def _run(cmd: str, env: dict | None = None):
     # run shell command with native TTY output (preserves Docker animations)
     print(f"  $ {cmd}")
     result = subprocess.run(
-        cmd, shell=True, cwd=PROJECT_ROOT, env=env,
+        cmd,
+        shell=True,
+        cwd=PROJECT_ROOT,
+        env=env,
     )
     if result.returncode != 0:
         print(f"\n  command failed (exit {result.returncode})")
@@ -160,16 +170,17 @@ def wait_for_services(timeout: int = 90):
 
 # --- test runner ---
 
+
 def run_suite(label: str, module_name: str) -> tuple[int, int]:
     # import module, run all TESTS entries without prompts; TESTS is (container, name, func)
-    mod   = importlib.import_module(module_name)
+    mod = importlib.import_module(module_name)
     tests = getattr(mod, "TESTS", [])
 
     if not tests:
-        print(f"\n  {label}  (No Tests Defined)\n")
+        print(f"\n  {label} (No Tests Defined)\n")
         return 0, 0
 
-    print(f"\n  {label}  ({len(tests)} Cases)\n")
+    print(f"\n  {label} ({len(tests)} Cases)\n")
 
     case_pass = 0
     case_fail = 0
@@ -195,41 +206,58 @@ def run_suite(label: str, module_name: str) -> tuple[int, int]:
 
 def main():
     parser = argparse.ArgumentParser(description="WDM group 24 test runner")
-    parser.add_argument("--mode", choices=["TPC", "SAGA"], default="TPC",
-                        help="transaction mode (default: TPC)")
-    parser.add_argument("--skip-build", action="store_true",
-                        help="skip docker compose build")
-    parser.add_argument("--no-restart", action="store_true",
-                        help="skip docker compose down/up (reuse running stack)")
+    parser.add_argument(
+        "--mode",
+        choices=["TPC", "SAGA"],
+        default="TPC",
+        help="transaction mode (default: TPC)",
+    )
+    parser.add_argument(
+        "--skip-build", action="store_true", help="skip docker compose build"
+    )
+    parser.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="skip docker compose down/up (reuse running stack)",
+    )
     args = parser.parse_args()
 
     global MODE
     MODE = args.mode
 
-    print(f"\n  WDM Group 24  Mode={MODE}\n")
+    print(f"\n  GROUP 20 / MODE: {MODE}\n")
 
     start_stack(MODE, skip_build=args.skip_build, no_restart=args.no_restart)
     wait_for_services()
 
     total_pass, total_fail = 0, 0
 
-    p, f = run_suite("Common", "test_common")
+    p, f = run_suite("COMMON SUITE", "test_common")
+    total_pass += p
+    total_fail += f
+
+    p, f = run_suite("REPLICATION SUITE", "test_replication")
     total_pass += p
     total_fail += f
 
     if MODE == "TPC":
-        p, f = run_suite("2PC", "test_tpc")
+        p, f = run_suite("TWO PHASE COMMIT SUITE", "test_tpc")
     else:
-        p, f = run_suite("SAGA", "test_sagas")
+        p, f = run_suite("SAGA SUITE", "test_sagas")
     total_pass += p
     total_fail += f
 
-    total_cases  = total_pass + total_fail
-    result_label = f"{_GREEN}All Tests Passed{_RESET}" if total_fail == 0 \
-                   else f"{_RED}Some Tests Failed{_RESET}"
+    total_cases = total_pass + total_fail
+    result_label = (
+        f"{_GREEN}All Tests Passed{_RESET}"
+        if total_fail == 0
+        else f"{_RED}Some Tests Failed{_RESET}"
+    )
 
-    print(f"  Summary  Mode={MODE}  Cases={total_cases}  "
-          f"{_GREEN}Passed={total_pass}{_RESET}  {_RED}Failed={total_fail}{_RESET}")
+    print(
+        f"  BENCHMARK SUMMARY  MODE: {MODE}  CASES: {total_cases}  "
+        f"{_GREEN}PASSED: {total_pass}{_RESET}  {_RED}FAILED: {total_fail}{_RESET}"
+    )
     print(f"  {result_label}\n")
 
     sys.exit(0 if total_fail == 0 else 1)
