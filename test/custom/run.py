@@ -110,16 +110,11 @@ def _compose_env(mode: str) -> dict:
 
 
 def _run(cmd: str, env: dict | None = None):
-    # run shell command streaming stdout; exit on failure
+    # run shell command with native TTY output (preserves Docker animations)
     print(f"  $ {cmd}")
     result = subprocess.run(
-        cmd, shell=True, cwd=PROJECT_ROOT,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, env=env,
+        cmd, shell=True, cwd=PROJECT_ROOT, env=env,
     )
-    if result.stdout.strip():
-        for line in result.stdout.strip().splitlines():
-            print(f"    {line}")
     if result.returncode != 0:
         print(f"\n  command failed (exit {result.returncode})")
         sys.exit(1)
