@@ -1,4 +1,7 @@
-# order saga orchestrator — drives stock→payment saga via redis streams
+# order saga coordinator — drives stock→payment saga via redis streams
+#
+# the orchestrator owns all position-writing and recovery;
+# this file only knows what the steps actually do
 
 import json
 import uuid
@@ -11,6 +14,7 @@ from collections import defaultdict
 import redis as redis_lib
 
 from common.idempotency import check_idempotency, save_idempotency
+from common.orchestrator import Orchestrator, Workflow, StepFailed, suspend
 from common.streams import (
     create_bus_pool,
     get_bus,
@@ -21,29 +25,8 @@ from common.streams import (
 )
 
 from db import get_order, get_order_for_update, mark_paid
-from db import create_saga, get_saga_for_update, advance_saga
 
 logger = logging.getLogger(__name__)
-
-
-class SagaState:
-    STOCK_REQUESTED = "STOCK_REQUESTED"
-    PAYMENT_REQUESTED = "PAYMENT_REQUESTED"
-    ROLLBACK_REQUESTED = "ROLLBACK_REQUESTED"
-    COMPLETED = "COMPLETED"
-    STOCK_FAILED = "STOCK_FAILED"
-    PAYMENT_FAILED = "PAYMENT_FAILED"
-    ROLLED_BACK = "ROLLED_BACK"
-    ROLLBACK_FAILED = "ROLLBACK_FAILED"
-
-
-TERMINAL_STATES = (
-    SagaState.COMPLETED,
-    SagaState.STOCK_FAILED,
-    SagaState.PAYMENT_FAILED,
-    SagaState.ROLLED_BACK,
-    SagaState.ROLLBACK_FAILED,
-)
 
 GATEWAY_STREAM = "gateway.orders"
 GATEWAY_RESPONSE_STREAM = "gateway.responses"
@@ -56,28 +39,18 @@ GROUP_INTERNAL = "order-response-service"
 
 _redis_pool = None
 _bus_pool = None
+_orchestrator: "Orchestrator | None" = None
 
 # price-lookup correlation: corr_id → (event, response | None)
 _pending_price_lookups: dict = {}
 _pending_price_lookups_lock = threading.Lock()
 
-_saga_start_times: dict = {}
-
-
-def _log_saga_duration(saga_id: str, final_state: str):
-    start = _saga_start_times.pop(saga_id, None)
-    if start is not None:
-        print(
-            f"[order] SAGA {saga_id} finished [{final_state}] "
-            f"in {(time.perf_counter() - start) * 1000:.2f}ms",
-            flush=True,
-        )
-
 
 def init(redis_pool, bus_pool):
-    global _redis_pool, _bus_pool
+    global _redis_pool, _bus_pool, _orchestrator
     _redis_pool = redis_pool
     _bus_pool = bus_pool
+    _orchestrator = Orchestrator(redis_pool)
     bus = get_bus(bus_pool)
     ensure_groups(
         bus,
@@ -124,6 +97,105 @@ def _publish_internal_request(
     )
 
 
+# ── Workflow step functions ───────────────────────────────────────────────────
+#
+# Each function receives ctx (the serialisable context dict) and does exactly
+# one piece of real work.  Async steps publish a message and call suspend();
+# the consumer thread will call orchestrator.resume() or .fail() when the
+# response arrives.
+
+
+def _step_subtract_stock(ctx):
+    # publish subtract_batch to stock service and wait for its response
+    wf_id = ctx["wf_id"]
+    batch_items = [
+        {"item_id": iid, "amount": qty}
+        for iid, qty in ctx["items_quantities"].items()
+    ]
+    corr_id = f"{wf_id}:stock:subtract_batch"
+    _publish_internal_request(
+        INTERNAL_STOCK_STREAM,
+        corr_id,
+        "POST",
+        "/subtract_batch",
+        body={"items": batch_items},
+        headers={"Idempotency-Key": corr_id},
+    )
+    suspend()
+
+
+def _step_charge_payment(ctx):
+    # publish pay to payment service and wait for its response
+    wf_id = ctx["wf_id"]
+    corr_id = f"{wf_id}:payment:pay"
+    _publish_internal_request(
+        INTERNAL_PAYMENT_STREAM,
+        corr_id,
+        "POST",
+        f"/pay/{ctx['user_id']}/{ctx['total_cost']}",
+        headers={"Idempotency-Key": corr_id},
+    )
+    suspend()
+
+
+def _step_mark_paid(ctx):
+    # sync: mark order as paid and record idempotency key for the gateway
+    r = _get_r()
+    mark_paid(r, ctx["order_id"])
+    save_idempotency(r, ctx["idempotency_key"], 200, "Checkout successful")
+
+
+def _comp_add_stock(ctx):
+    # compensation for step 0: add stock back and wait for confirmation
+    wf_id = ctx["wf_id"]
+    batch_items = [
+        {"item_id": iid, "amount": qty}
+        for iid, qty in ctx["items_quantities"].items()
+    ]
+    corr_id = f"{wf_id}:stock:rollback"
+    _publish_internal_request(
+        INTERNAL_STOCK_STREAM,
+        corr_id,
+        "POST",
+        "/add_batch",
+        body={"items": batch_items},
+        headers={"Idempotency-Key": corr_id},
+    )
+    suspend()
+
+
+def _on_complete(ctx):
+    # called by the engine once all forward steps succeed
+    _publish_gateway_response(ctx["original_correlation_id"], 200, "Checkout successful")
+
+
+def _on_failed(ctx):
+    # called by the engine once all compensation steps finish
+    _publish_gateway_response(
+        ctx["original_correlation_id"],
+        400,
+        {"error": ctx.get("_error", "Checkout failed")},
+    )
+
+
+CHECKOUT_WORKFLOW = Workflow(
+    name="checkout_saga",
+    steps=[_step_subtract_stock, _step_charge_payment, _step_mark_paid],
+    # compensation[0] undoes step[0]: restore stock
+    compensation=[_comp_add_stock],
+    on_complete=_on_complete,
+    on_failed=_on_failed,
+)
+
+# correlation_id suffixes that map to forward step responses
+_RESUME_SUFFIXES = [":stock:subtract_batch", ":payment:pay"]
+# correlation_id suffix that maps to a compensation step response
+_COMP_SUFFIX = ":stock:rollback"
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+
 def handle_checkout_saga(r, order_id: str, headers: dict):
     idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
     correlation_id = headers.get("X-Correlation-Id") or headers.get("x-correlation-id")
@@ -146,34 +218,56 @@ def handle_checkout_saga(r, order_id: str, headers: dict):
     if not items_quantities:
         return 200, "Order has no items."
 
-    saga_id = str(uuid.uuid4())
-    stock_corr_id = f"{saga_id}:stock:subtract_batch"
-
-    create_saga(
-        r,
-        saga_id,
-        order_id,
-        SagaState.STOCK_REQUESTED,
-        dict(items_quantities),
-        correlation_id,
-        idem_key,
+    _orchestrator.start(
+        CHECKOUT_WORKFLOW,
+        {
+            "order_id": order_id,
+            "user_id": order["user_id"],
+            "total_cost": order["total_cost"],
+            "items_quantities": dict(items_quantities),
+            "original_correlation_id": correlation_id,
+            "idempotency_key": idem_key,
+        },
     )
 
-    _saga_start_times[saga_id] = time.perf_counter()
+    return None  # response delivered async via _publish_gateway_response
 
-    batch_items = [
-        {"item_id": iid, "amount": qty} for iid, qty in items_quantities.items()
-    ]
-    _publish_internal_request(
-        INTERNAL_STOCK_STREAM,
-        stock_corr_id,
-        "POST",
-        "/subtract_batch",
-        body={"items": batch_items},
-        headers={"Idempotency-Key": stock_corr_id},
-    )
 
-    return None  # response sent async via _publish_gateway_response
+def handle_internal_response(payload):
+    """Dispatch one message from the internal.responses stream."""
+    correlation_id = payload.get("correlation_id", "")
+
+    # price-lookup fast path (used by addItem, not the saga)
+    with _pending_price_lookups_lock:
+        if correlation_id in _pending_price_lookups:
+            event, _ = _pending_price_lookups[correlation_id]
+            _pending_price_lookups[correlation_id] = (event, payload)
+            event.set()
+            return
+
+    # forward step responses
+    for suffix in _RESUME_SUFFIXES:
+        if correlation_id.endswith(suffix):
+            wf_id = correlation_id[: -len(suffix)]
+            if payload.get("status_code") == 200:
+                _orchestrator.resume(CHECKOUT_WORKFLOW, wf_id)
+            else:
+                body = payload.get("body") or {}
+                error = (
+                    body.get("error")
+                    if isinstance(body, dict)
+                    else str(body)
+                ) or "Step failed"
+                _orchestrator.fail(CHECKOUT_WORKFLOW, wf_id, error)
+            return
+
+    # compensation step response
+    if correlation_id.endswith(_COMP_SUFFIX):
+        wf_id = correlation_id[: -len(_COMP_SUFFIX)]
+        _orchestrator.resume_comp(CHECKOUT_WORKFLOW, wf_id)
+        return
+
+    logger.warning("No handler for correlation_id: %s", correlation_id)
 
 
 def route_gateway_message(payload, r):
@@ -310,139 +404,6 @@ def _fetch_item_price(item_id: str):
     return response
 
 
-def _on_stock_response(r, saga, response):
-    if response.get("status_code") == 200:
-        payment_corr_id = f"{saga['id']}:payment:pay"
-        try:
-            order = get_order(r, saga["order_id"])
-        except ValueError:
-            _fire_rollback(r, saga)
-            return
-        advance_saga(r, saga["id"], SagaState.PAYMENT_REQUESTED)
-        _publish_internal_request(
-            INTERNAL_PAYMENT_STREAM,
-            payment_corr_id,
-            "POST",
-            f"/pay/{order['user_id']}/{order['total_cost']}",
-            headers={"Idempotency-Key": payment_corr_id},
-        )
-    else:
-        error = (response.get("body") or {}).get("error", "Stock subtraction failed")
-        advance_saga(r, saga["id"], SagaState.STOCK_FAILED)
-        _log_saga_duration(saga["id"], SagaState.STOCK_FAILED)
-        _publish_gateway_response(
-            saga["original_correlation_id"], 400, {"error": error}
-        )
-
-
-def _on_payment_response(r, saga, response):
-    if response.get("status_code") == 200:
-        try:
-            mark_paid(r, saga["order_id"])
-            save_idempotency(r, saga["idempotency_key"], 200, "Checkout successful")
-            advance_saga(r, saga["id"], SagaState.COMPLETED)
-        except Exception:
-            logger.critical(
-                "SAGA INCONSISTENCY: payment committed but order %s not marked paid",
-                saga["order_id"],
-            )
-            raise
-        _log_saga_duration(saga["id"], SagaState.COMPLETED)
-        _publish_gateway_response(
-            saga["original_correlation_id"], 200, "Checkout successful"
-        )
-    else:
-        _fire_rollback(r, saga)
-
-
-def _fire_rollback(r, saga):
-    rollback_corr_id = f"{saga['id']}:stock:rollback"
-    batch_items = [
-        {"item_id": iid, "amount": qty} for iid, qty in saga["items_quantities"].items()
-    ]
-    advance_saga(r, saga["id"], SagaState.ROLLBACK_REQUESTED)
-    _publish_internal_request(
-        INTERNAL_STOCK_STREAM,
-        rollback_corr_id,
-        "POST",
-        "/add_batch",
-        body={"items": batch_items},
-        headers={"Idempotency-Key": rollback_corr_id},
-    )
-
-
-def _on_rollback_response(r, saga, response):
-    if response.get("status_code") == 200:
-        advance_saga(r, saga["id"], SagaState.ROLLED_BACK)
-        _log_saga_duration(saga["id"], SagaState.ROLLED_BACK)
-        _publish_gateway_response(
-            saga["original_correlation_id"],
-            400,
-            {"error": "User has insufficient credit"},
-        )
-    else:
-        logger.critical(
-            "SAGA INCONSISTENCY: stock rollback failed. saga_id=%s", saga["id"]
-        )
-        advance_saga(r, saga["id"], SagaState.ROLLBACK_FAILED)
-        _log_saga_duration(saga["id"], SagaState.ROLLBACK_FAILED)
-        _publish_gateway_response(
-            saga["original_correlation_id"],
-            400,
-            {"error": "Checkout failed and rollback encountered an error."},
-        )
-
-
-_SAGA_HANDLERS = {
-    ":stock:subtract_batch": (_on_stock_response, SagaState.STOCK_REQUESTED),
-    ":payment:pay": (_on_payment_response, SagaState.PAYMENT_REQUESTED),
-    ":stock:rollback": (_on_rollback_response, SagaState.ROLLBACK_REQUESTED),
-}
-
-
-def handle_internal_response(payload):
-    """Dispatch one message from the internal.responses stream."""
-    correlation_id = payload.get("correlation_id", "")
-
-    # price-lookup fast path
-    with _pending_price_lookups_lock:
-        if correlation_id in _pending_price_lookups:
-            event, _ = _pending_price_lookups[correlation_id]
-            _pending_price_lookups[correlation_id] = (event, payload)
-            event.set()
-            return
-
-    # saga state-machine
-    handler_fn, saga_id, expected_state = None, None, None
-    for suffix, (fn, state) in _SAGA_HANDLERS.items():
-        if correlation_id.endswith(suffix):
-            saga_id = correlation_id[: -len(suffix)]
-            handler_fn, expected_state = fn, state
-            break
-
-    if handler_fn is None:
-        logger.warning("No handler for correlation_id: %s", correlation_id)
-        return
-
-    r = _get_r()
-    try:
-        saga = get_saga_for_update(r, saga_id)
-        if saga is None:
-            logger.error("Saga %s not found", saga_id)
-            return
-        if saga["state"] != expected_state:
-            logger.warning(
-                "Saga %s: expected %s got %s — skipping",
-                saga_id,
-                expected_state,
-                saga["state"],
-            )
-            return
-        handler_fn(r, saga, payload)
-    except Exception as exc:
-        logger.error("Error advancing saga %s: %s", saga_id, exc, exc_info=True)
-
-
 def start_gateway_consumer():
     # read gateway.orders, dispatch each message, publish response
     while True:
@@ -490,66 +451,6 @@ def start_internal_consumer():
             time.sleep(1)
 
 
-def recovery_saga(redis_pool):
-    # re-publish stream messages for any non-terminal saga found on startup
-    r = redis_lib.Redis(connection_pool=redis_pool)
-
-    cursor = 0
-    recovered = 0
-    while True:
-        cursor, keys = r.scan(cursor, match="saga:*", count=100)
-        for key in keys:
-            saga_id = key[len("saga:") :]
-            saga = get_saga_for_update(r, saga_id)
-            if saga is None or saga["state"] in TERMINAL_STATES:
-                continue
-
-            print(f"SAGA RECOVERY: saga={saga_id} state={saga['state']}", flush=True)
-            recovered += 1
-
-            batch_items = [
-                {"item_id": iid, "amount": qty}
-                for iid, qty in saga["items_quantities"].items()
-            ]
-
-            if saga["state"] == SagaState.STOCK_REQUESTED:
-                corr_id = f"{saga_id}:stock:subtract_batch"
-                _publish_internal_request(
-                    INTERNAL_STOCK_STREAM,
-                    corr_id,
-                    "POST",
-                    "/subtract_batch",
-                    body={"items": batch_items},
-                    headers={"Idempotency-Key": corr_id},
-                )
-            elif saga["state"] == SagaState.PAYMENT_REQUESTED:
-                try:
-                    order = get_order(r, saga["order_id"])
-                except ValueError:
-                    continue
-                corr_id = f"{saga_id}:payment:pay"
-                _publish_internal_request(
-                    INTERNAL_PAYMENT_STREAM,
-                    corr_id,
-                    "POST",
-                    f"/pay/{order['user_id']}/{order['total_cost']}",
-                    headers={"Idempotency-Key": corr_id},
-                )
-            elif saga["state"] == SagaState.ROLLBACK_REQUESTED:
-                corr_id = f"{saga_id}:stock:rollback"
-                _publish_internal_request(
-                    INTERNAL_STOCK_STREAM,
-                    corr_id,
-                    "POST",
-                    "/add_batch",
-                    body={"items": batch_items},
-                    headers={"Idempotency-Key": corr_id},
-                )
-
-            print(f"SAGA RECOVERY: re-published for saga={saga_id}", flush=True)
-
-        if cursor == 0:
-            break
-
-    if recovered == 0:
-        print("SAGA RECOVERY: No incomplete sagas found", flush=True)
+def recovery_saga():
+    # scan wf:* keys for incomplete checkout_saga workflows and resume them
+    _orchestrator.recover(CHECKOUT_WORKFLOW)

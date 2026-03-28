@@ -175,7 +175,7 @@ with app.app_context():
         saga.init(redis_pool, bus_pool)
 
         try:
-            saga.recovery_saga(redis_pool)
+            saga.recovery_saga()
         except Exception as e:
             print(f"SAGA RECOVERY ORDER: {e}", flush=True)
 

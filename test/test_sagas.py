@@ -123,22 +123,32 @@ def test_coordinator_crash_recovery():
 
     docker_cmd(f"docker stop {ORDER_CONTAINER}")
 
-    saga_id           = str(uuid.uuid4())
-    items_quantities  = json.dumps({item: ITEM_QTY})
-    stock_idem_key    = f"{saga_id}:stock:subtract_batch"
-    new_stock         = STOCK - ITEM_QTY
-    cached_body       = json.dumps({"updated_stock": {item: new_stock}})
+    wf_id          = str(uuid.uuid4())
+    stock_idem_key = f"{wf_id}:stock:subtract_batch"
+    new_stock      = STOCK - ITEM_QTY
+    cached_body    = json.dumps({"updated_stock": {item: new_stock}})
+    context        = json.dumps({
+        "wf_id":                  wf_id,
+        "order_id":               order,
+        "user_id":                user,
+        "total_cost":             ITEM_PRICE * ITEM_QTY,
+        "items_quantities":       {item: ITEM_QTY},
+        "original_correlation_id": "recovery-test",
+        "idempotency_key":        "",
+    })
 
+    # inject a workflow that published subtract_stock but crashed before the response arrived
     docker_exec_redis(
         ORDER_DB,
-        "HSET", f"saga:{saga_id}",
-        "order_id",                order,
-        "state",                   "STOCK_REQUESTED",
-        "items_quantities",        items_quantities,
-        "original_correlation_id", "recovery-test",
-        "idempotency_key",         "",
+        "HSET", f"wf:{wf_id}",
+        "name",    "checkout_saga",
+        "step",    "0",
+        "status",  "waiting",
+        "context", context,
     )
+    # simulate: stock was already decremented by the stock service
     docker_exec_redis(STOCK_DB, "HINCRBY", f"item:{item}", "stock", str(-ITEM_QTY))
+    # cache the 200 response so re-delivery is idempotent
     docker_exec_redis(
         STOCK_DB,
         "HSET", f"idem:{stock_idem_key}",
