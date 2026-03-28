@@ -155,3 +155,59 @@ services:
       timeout: 3s
       retries: 15
       start_period: 3s
+
+  redis-order-replica:
+    image: redis:7-alpine
+    restart: on-failure
+    command: >
+      redis-server
+      --replicaof redis-order 6379
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+      --maxclients 7000
+    depends_on:
+      redis-order:
+        condition: service_healthy
+
+  redis-stock-replica:
+    image: redis:7-alpine
+    restart: on-failure
+    command: >
+      redis-server
+      --replicaof redis-stock 6379
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+      --maxclients 7000
+    depends_on:
+      redis-stock:
+        condition: service_healthy
+
+  redis-payment-replica:
+    image: redis:7-alpine
+    restart: on-failure
+    command: >
+      redis-server
+      --replicaof redis-payment 6379
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+      --maxclients 7000
+    depends_on:
+      redis-payment:
+        condition: service_healthy
+
+  redis-bus-replica:
+    image: redis:7-alpine
+    restart: on-failure
+    command: >
+      redis-server
+      --replicaof redis-bus 6379
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+      --maxclients 20000
+    depends_on:
+      redis-bus:
+        condition: service_healthy
