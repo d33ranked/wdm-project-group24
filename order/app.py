@@ -165,9 +165,9 @@ def health():
 
 with app.app_context():
     if TRANSACTION_MODE == "TPC":
-        tpc.init_bus(bus_pool)  # must come before recovery
+        tpc.init_bus(bus_pool, redis_pool)  # must come before recovery
         try:
-            tpc.recovery_tpc(redis_pool)
+            tpc.recovery_tpc()
         except Exception as e:
             print(f"RECOVERY ORDER TPC: {e}", flush=True)
 

@@ -312,7 +312,8 @@ def test_participant_crash_recovery():
 
 
 def test_coordinator_crash_recovery():
-    # inject a stuck txn in preparing_payment, restart order service, verify recovery
+    # inject a stuck workflow at step=1 (stock prepared, payment not yet attempted),
+    # restart order service, verify recovery resolves to a consistent state
     ITEM_PRICE      = 20
     ITEM_QTY        = 2
     STOCK           = 10
@@ -328,25 +329,32 @@ def test_coordinator_crash_recovery():
     order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
     api("POST", f"/orders/addItem/{order}/{item}/{ITEM_QTY}")
 
-    txn_id         = f"recovery-test-{uuid.uuid4()}"
-    prepared_stock = json.dumps([[item, ITEM_QTY]])
+    wf_id = f"recovery-test-{uuid.uuid4()}"
 
+    # simulate step 0 (prepare_stock) having completed: deduct stock and leave reservation key
     docker_exec_redis(STOCK_DB, "HINCRBY", f"item:{item}", "stock", str(-ITEM_QTY))
-    docker_exec_redis(STOCK_DB, "HSET", f"prepared:stock:{txn_id}", item, str(ITEM_QTY))
-    docker_exec_redis(STOCK_DB, "EXPIRE", f"prepared:stock:{txn_id}", "600")
+    docker_exec_redis(STOCK_DB, "HSET", f"prepared:stock:{wf_id}", item, str(ITEM_QTY))
+    docker_exec_redis(STOCK_DB, "EXPIRE", f"prepared:stock:{wf_id}", "600")
+
+    # inject the orchestrator workflow record: step=1 (prepare_payment) not yet run
+    context = json.dumps({
+        "wf_id":      wf_id,
+        "order_id":   order,
+        "user_id":    user,
+        "total_cost": ITEM_PRICE * ITEM_QTY,
+        "items":      [[item, ITEM_QTY]],
+    })
     docker_exec_redis(
         ORDER_DB,
-        "HSET", f"txn:{txn_id}",
-        "order_id",         order,
-        "status",           "preparing_payment",
-        "prepared_stock",   prepared_stock,
-        "prepared_payment", "false",
-        "user_id",          user,
-        "total_cost",       str(ITEM_PRICE * ITEM_QTY),
+        "HSET", f"wf:{wf_id}",
+        "name",    "checkout_tpc",
+        "step",    "1",
+        "status",  "running",
+        "context", context,
     )
 
     check(
-        f"Stuck Transaction Injected — txn={txn_id[:8]}... status=preparing_payment",
+        f"Stuck Workflow Injected — wf={wf_id[:8]}... step=1 (stock prepared, payment pending)",
         True,
     )
 
@@ -364,18 +372,21 @@ def test_coordinator_crash_recovery():
     credit_after = json_field(api("GET", f"/payment/find_user/{user}"), "credit")
     paid_after   = json_field(api("GET", f"/orders/find/{order}"), "paid")
 
+    expected_stock  = STOCK - ITEM_QTY
+    expected_credit = CREDIT - (ITEM_PRICE * ITEM_QTY)
+
+    committed   = (stock_after == expected_stock and credit_after == expected_credit and paid_after is True)
+    rolled_back = (stock_after == STOCK          and credit_after == CREDIT          and paid_after is not True)
+
     check(
-        f"Stock Restored To {STOCK} After Recovery — ABORT Returned The {ITEM_QTY} Reserved Units",
-        stock_after == STOCK, f"got {stock_after}",
+        "After Coordinator Crash And Recovery, State Is Consistent — Either Fully Committed Or Fully Rolled Back",
+        committed or rolled_back,
+        f"stock={stock_after}, credit={credit_after}, paid={paid_after}",
     )
-    check(
-        f"Credit Unchanged At {CREDIT} — Payment Was Never Prepared, Nothing To Reverse",
-        credit_after == CREDIT, f"got {credit_after}",
-    )
-    check(
-        "Order NOT Marked Paid — Recovery Correctly Aborted The In-Doubt Transaction",
-        paid_after is not True, f"got paid={paid_after}",
-    )
+    if committed:
+        check("Recovery Resolved By Completing — Step 1 Succeeded, Commit Finalised", True)
+    elif rolled_back:
+        check("Recovery Resolved By Aborting — Step 1 Failed Or Was Compensated, Stock Restored", True)
 
 
 TESTS = [
