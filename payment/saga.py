@@ -1,5 +1,6 @@
 # payment saga participant — redis streams, at-least-once delivery via pending re-read
 
+import functools
 import uuid
 import json
 import logging
@@ -143,13 +144,13 @@ def _publish_response(
     )
 
 
-def _handle_gateway_message(msg_id: str, payload: dict):
+def _handle_message(msg_id: str, payload: dict, ack_stream: str, ack_group: str, response_stream: str):
     # runs in its own greenlet — all messages in a batch execute concurrently
     # gevent yields on every redis i/o call so 500 messages overlap their network waits
     correlation_id = payload.get("correlation_id")
     bus = _get_bus()
     if not correlation_id:
-        ack(bus, GATEWAY_STREAM, GROUP_GATEWAY, msg_id)
+        ack(bus, ack_stream, ack_group, msg_id)
         return
     r = _get_r()
     try:
@@ -157,25 +158,13 @@ def _handle_gateway_message(msg_id: str, payload: dict):
     except Exception as exc:
         logger.error("Error processing %s: %s", correlation_id, exc, exc_info=True)
         status_code, body = 400, {"error": "Internal server error"}
-    _publish_response(GATEWAY_RESPONSE_STREAM, correlation_id, status_code, body)
-    ack(bus, GATEWAY_STREAM, GROUP_GATEWAY, msg_id)
+    _publish_response(response_stream, correlation_id, status_code, body)
+    ack(bus, ack_stream, ack_group, msg_id)
 
 
-def _handle_internal_message(msg_id: str, payload: dict):
-    # runs in its own greenlet — same concurrent pattern as gateway handler
-    correlation_id = payload.get("correlation_id")
-    bus = _get_bus()
-    if not correlation_id:
-        ack(bus, INTERNAL_STREAM, GROUP_INTERNAL, msg_id)
-        return
-    r = _get_r()
-    try:
-        status_code, body = route_stream_message(payload, r)
-    except Exception as exc:
-        logger.error("Error processing %s: %s", correlation_id, exc, exc_info=True)
-        status_code, body = 400, {"error": "Internal server error"}
-    _publish_response(INTERNAL_RESPONSE_STREAM, correlation_id, status_code, body)
-    ack(bus, INTERNAL_STREAM, GROUP_INTERNAL, msg_id)
+# bind stream/group constants so run_consumer can call handler(msg_id, payload)
+_handle_gateway_message  = functools.partial(_handle_message, ack_stream=GATEWAY_STREAM,  ack_group=GROUP_GATEWAY,  response_stream=GATEWAY_RESPONSE_STREAM)
+_handle_internal_message = functools.partial(_handle_message, ack_stream=INTERNAL_STREAM, ack_group=GROUP_INTERNAL, response_stream=INTERNAL_RESPONSE_STREAM)
 
 
 def start_gateway_consumer():
