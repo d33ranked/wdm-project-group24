@@ -1,8 +1,3 @@
-# order 2pc coordinator — uses the orchestrator for durable checkout
-#
-# the orchestrator owns all position-writing and recovery;
-# this file only knows what the steps actually do
-
 import json
 import uuid
 import time
@@ -20,20 +15,18 @@ from common.streams import get_bus, ensure_groups, publish
 
 logger = logging.getLogger(__name__)
 
-TPC_STOCK_STREAM    = "tpc.stock"
-TPC_PAYMENT_STREAM  = "tpc.payment"
+TPC_STOCK_STREAM = "tpc.stock"
+TPC_PAYMENT_STREAM = "tpc.payment"
 TPC_RESPONSE_STREAM = "tpc.responses"
 
 TPC_TIMEOUT_S = 15  # stock restarts in ~3s; 15s gives plenty of margin
 
-# module-level singletons — set by init_bus()
 _tpc_client: "TpcStreamClient | None" = None
-_orchestrator: "Orchestrator | None"  = None
+_orchestrator: "Orchestrator | None" = None
 _redis_pool = None
 
 
 class TpcStreamClient:
-    # mirrors gateway's StreamClient for tpc coordinator→participant calls
 
     def __init__(self, bus_pool):
         self._pool = bus_pool
@@ -112,12 +105,11 @@ class TpcStreamClient:
 
 
 def init_bus(bus_pool, redis_pool):
-    # initialise the TPC stream client and the orchestrator
     global _tpc_client, _orchestrator, _redis_pool
     _redis_pool = redis_pool
     bus = get_bus(bus_pool)
     ensure_groups(bus, [(TPC_RESPONSE_STREAM, "tpc-init")])
-    _tpc_client   = TpcStreamClient(bus_pool)
+    _tpc_client = TpcStreamClient(bus_pool)
     _orchestrator = Orchestrator(redis_pool)
 
 
@@ -126,12 +118,11 @@ def _send(stream: str, payload: dict, correlation_id: str) -> dict:
 
 
 def _publish(stream: str, payload: dict):
-    # fire-and-forget: publish without waiting for a response
     bus = get_bus(_tpc_client._pool)
     publish(bus, stream, payload)
 
 
-# http helper — used only for addItem price lookup (stock find, not tpc)
+# used only for addItem price lookup — not part of the TPC protocol
 def send_get_request(url):
     try:
         start = perf_counter()
@@ -162,24 +153,17 @@ def _release_checkout_lock(r, order_id: str, lock_token: str):
     release_script(keys=[f"checkout-lock:{order_id}"], args=[lock_token])
 
 
-# ── Workflow step functions ───────────────────────────────────────────────────
-#
-# Each function receives ctx (the serialisable context dict) and does exactly
-# one piece of real work.  It knows nothing about position-writing or recovery —
-# the orchestrator handles all of that.
-
-
+# workflow steps
 def _step_prepare_stock(ctx):
-    # ask the stock service to vote YES/NO and hold a reservation
     batch_items = [{"item_id": iid, "quantity": qty} for iid, qty in ctx["items"]]
     corr_id = f"{ctx['wf_id']}:stock:prepare_batch"
     resp = _send(
         TPC_STOCK_STREAM,
         {
             "correlation_id": corr_id,
-            "command":        "prepare_batch",
-            "txn_id":         ctx["wf_id"],
-            "items":          batch_items,
+            "command": "prepare_batch",
+            "txn_id": ctx["wf_id"],
+            "items": batch_items,
         },
         corr_id,
     )
@@ -188,16 +172,15 @@ def _step_prepare_stock(ctx):
 
 
 def _step_prepare_payment(ctx):
-    # ask the payment service to vote YES/NO and hold a reservation
     corr_id = f"{ctx['wf_id']}:payment:prepare"
     resp = _send(
         TPC_PAYMENT_STREAM,
         {
             "correlation_id": corr_id,
-            "command":        "prepare",
-            "txn_id":         ctx["wf_id"],
-            "user_id":        ctx["user_id"],
-            "amount":         ctx["total_cost"],
+            "command": "prepare",
+            "txn_id": ctx["wf_id"],
+            "user_id": ctx["user_id"],
+            "amount": ctx["total_cost"],
         },
         corr_id,
     )
@@ -206,22 +189,21 @@ def _step_prepare_payment(ctx):
 
 
 def _step_commit(ctx):
-    # decision is final: fire-and-forget commits to both participants, then mark order paid
-    # at-least-once delivery + idempotent lua scripts guarantee participants always commit
+    # fire-and-forget: at-least-once delivery + idempotent participant scripts guarantee commit
     _publish(
         TPC_STOCK_STREAM,
         {
             "correlation_id": f"{ctx['wf_id']}:stock:commit",
-            "command":        "commit",
-            "txn_id":         ctx["wf_id"],
+            "command": "commit",
+            "txn_id": ctx["wf_id"],
         },
     )
     _publish(
         TPC_PAYMENT_STREAM,
         {
             "correlation_id": f"{ctx['wf_id']}:payment:commit",
-            "command":        "commit",
-            "txn_id":         ctx["wf_id"],
+            "command": "commit",
+            "txn_id": ctx["wf_id"],
         },
     )
     r = redis_lib.Redis(connection_pool=_redis_pool)
@@ -229,28 +211,26 @@ def _step_commit(ctx):
 
 
 def _comp_abort_stock(ctx):
-    # undo step 0: release the stock reservation
     corr_id = f"{ctx['wf_id']}:stock:abort"
     _send(
         TPC_STOCK_STREAM,
         {
             "correlation_id": corr_id,
-            "command":        "abort",
-            "txn_id":         ctx["wf_id"],
+            "command": "abort",
+            "txn_id": ctx["wf_id"],
         },
         corr_id,
     )
 
 
 def _comp_abort_payment(ctx):
-    # undo step 1: release the payment reservation
     corr_id = f"{ctx['wf_id']}:payment:abort"
     _send(
         TPC_PAYMENT_STREAM,
         {
             "correlation_id": corr_id,
-            "command":        "abort",
-            "txn_id":         ctx["wf_id"],
+            "command": "abort",
+            "txn_id": ctx["wf_id"],
         },
         corr_id,
     )
@@ -259,12 +239,11 @@ def _comp_abort_payment(ctx):
 CHECKOUT_WORKFLOW = Workflow(
     name="checkout_tpc",
     steps=[_step_prepare_stock, _step_prepare_payment, _step_commit],
-    # compensation[i] undoes step[i]; run in reverse on any failure
     compensation=[_comp_abort_stock, _comp_abort_payment],
 )
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# public API
 
 
 def checkout_tpc(order_id: str):
@@ -283,7 +262,7 @@ def checkout_tpc(order_id: str):
             return Response("Order is already paid for!", status=200)
 
         items = json.loads(order_data.get("items", "[]"))
-        user_id    = order_data["user_id"]
+        user_id = order_data["user_id"]
         total_cost = int(order_data.get("total_cost", 0))
 
         items_quantities = defaultdict(int)
@@ -298,10 +277,10 @@ def checkout_tpc(order_id: str):
         wf_id = _orchestrator.start(
             CHECKOUT_WORKFLOW,
             {
-                "order_id":   order_id,
-                "user_id":    user_id,
+                "order_id": order_id,
+                "user_id": user_id,
                 "total_cost": total_cost,
-                "items":      context_items,
+                "items": context_items,
             },
         )
 
@@ -316,6 +295,4 @@ def checkout_tpc(order_id: str):
 
 
 def recovery_tpc():
-    # scan wf:* keys for incomplete checkout_tpc workflows and resume them;
-    # replaces the old hand-written recovery_tpc(redis_pool) function
     _orchestrator.recover(CHECKOUT_WORKFLOW)

@@ -1,18 +1,12 @@
-# order saga coordinator — drives stock→payment saga via redis streams
-#
-# the orchestrator owns all position-writing and recovery;
-# this file only knows what the steps actually do
-
 import json
 import uuid
 import time
 import random
 import logging
 import threading
-from collections import defaultdict
-
 import redis as redis_lib
-
+from collections import defaultdict
+from db import get_order, get_order_for_update, mark_paid
 from common.idempotency import check_idempotency, save_idempotency
 from common.orchestrator import Orchestrator, Workflow, StepFailed, suspend
 from common.streams import (
@@ -23,8 +17,6 @@ from common.streams import (
     read_pending_then_new,
     ack,
 )
-
-from db import get_order, get_order_for_update, mark_paid
 
 logger = logging.getLogger(__name__)
 
@@ -97,20 +89,17 @@ def _publish_internal_request(
     )
 
 
-# ── Workflow step functions ───────────────────────────────────────────────────
+# workflow step functions
 #
-# Each function receives ctx (the serialisable context dict) and does exactly
-# one piece of real work.  Async steps publish a message and call suspend();
-# the consumer thread will call orchestrator.resume() or .fail() when the
-# response arrives.
+# each function receives ctx (the serialisable context dict) and does exactly one piece of real work.
+# async steps publish a message and call suspend(); the consumer thread will call orchestrator.resume() or .fail() when the response arrives.
 
 
 def _step_subtract_stock(ctx):
     # publish subtract_batch to stock service and wait for its response
     wf_id = ctx["wf_id"]
     batch_items = [
-        {"item_id": iid, "amount": qty}
-        for iid, qty in ctx["items_quantities"].items()
+        {"item_id": iid, "amount": qty} for iid, qty in ctx["items_quantities"].items()
     ]
     corr_id = f"{wf_id}:stock:subtract_batch"
     _publish_internal_request(
@@ -149,8 +138,7 @@ def _comp_add_stock(ctx):
     # compensation for step 0: add stock back and wait for confirmation
     wf_id = ctx["wf_id"]
     batch_items = [
-        {"item_id": iid, "amount": qty}
-        for iid, qty in ctx["items_quantities"].items()
+        {"item_id": iid, "amount": qty} for iid, qty in ctx["items_quantities"].items()
     ]
     corr_id = f"{wf_id}:stock:rollback"
     _publish_internal_request(
@@ -166,7 +154,9 @@ def _comp_add_stock(ctx):
 
 def _on_complete(ctx):
     # called by the engine once all forward steps succeed
-    _publish_gateway_response(ctx["original_correlation_id"], 200, "Checkout successful")
+    _publish_gateway_response(
+        ctx["original_correlation_id"], 200, "Checkout successful"
+    )
 
 
 def _on_failed(ctx):
@@ -193,9 +183,7 @@ _RESUME_SUFFIXES = [":stock:subtract_batch", ":payment:pay"]
 _COMP_SUFFIX = ":stock:rollback"
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
-
+# public API
 def handle_checkout_saga(r, order_id: str, headers: dict):
     idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
     correlation_id = headers.get("X-Correlation-Id") or headers.get("x-correlation-id")
@@ -254,9 +242,7 @@ def handle_internal_response(payload):
             else:
                 body = payload.get("body") or {}
                 error = (
-                    body.get("error")
-                    if isinstance(body, dict)
-                    else str(body)
+                    body.get("error") if isinstance(body, dict) else str(body)
                 ) or "Step failed"
                 _orchestrator.fail(CHECKOUT_WORKFLOW, wf_id, error)
             return
@@ -271,7 +257,6 @@ def handle_internal_response(payload):
 
 
 def route_gateway_message(payload, r):
-    # dispatch one message from the gateway.orders stream; returns (status_code, body) or None for checkout
     method = payload.get("method", "GET").upper()
     path = payload.get("path", "/")
     body = payload.get("body") or {}
@@ -280,7 +265,6 @@ def route_gateway_message(payload, r):
     segments = [s for s in path.strip("/").split("/") if s]
     idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
 
-    # POST /create/<user_id>
     if method == "POST" and len(segments) >= 2 and segments[0] == "create":
         order_id = str(uuid.uuid4())
         r.hset(
@@ -294,7 +278,6 @@ def route_gateway_message(payload, r):
         )
         return 201, {"order_id": order_id}
 
-    # POST /batch_init/<n>/<n_items>/<n_users>/<item_price>
     if method == "POST" and len(segments) >= 5 and segments[0] == "batch_init":
         n, n_items, n_users, item_price = (
             int(segments[1]),
@@ -319,7 +302,6 @@ def route_gateway_message(payload, r):
         pipe.execute()
         return 200, {"msg": "Batch init for orders successful"}
 
-    # GET /find/<order_id>
     if method == "GET" and len(segments) >= 2 and segments[0] == "find":
         try:
             order = get_order(r, segments[1])
@@ -333,7 +315,6 @@ def route_gateway_message(payload, r):
             "total_cost": order["total_cost"],
         }
 
-    # POST /addItem/<order_id>/<item_id>/<quantity>
     if method == "POST" and len(segments) >= 4 and segments[0] == "addItem":
         order_id, item_id, quantity = segments[1], segments[2], int(segments[3])
         if quantity <= 0:
@@ -377,7 +358,6 @@ def route_gateway_message(payload, r):
         save_idempotency(r, idem_key, 200, resp)
         return 200, resp
 
-    # POST /checkout/<order_id>
     if method == "POST" and len(segments) >= 2 and segments[0] == "checkout":
         return handle_checkout_saga(r, segments[1], headers)
 
@@ -405,7 +385,6 @@ def _fetch_item_price(item_id: str):
 
 
 def start_gateway_consumer():
-    # read gateway.orders, dispatch each message, publish response
     while True:
         try:
             bus = _get_bus()
@@ -434,7 +413,6 @@ def start_gateway_consumer():
 
 
 def start_internal_consumer():
-    # read internal.responses and advance saga state machine
     while True:
         try:
             bus = _get_bus()
@@ -452,5 +430,4 @@ def start_internal_consumer():
 
 
 def recovery_saga():
-    # scan wf:* keys for incomplete checkout_saga workflows and resume them
     _orchestrator.recover(CHECKOUT_WORKFLOW)
