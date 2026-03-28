@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 
 import redis as redis_lib
 
@@ -87,6 +88,31 @@ def read_pending_then_new(bus: redis_lib.Redis, stream: str, group: str) -> list
 def ack(bus: redis_lib.Redis, stream: str, group: str, message_id: str):
     # remove message from pending list; call only after processing and response are done
     bus.xack(stream, group, message_id)
+
+
+def run_consumer(
+    pool: redis_lib.ConnectionPool,
+    stream: str,
+    group: str,
+    handler,
+    svc_logger,
+    label: str = "",
+):
+    # generic gevent consumer loop used by participant services (stock, payment).
+    # spawns one greenlet per message so all messages in a batch run concurrently.
+    # on any exception the loop logs and retries after 1 s rather than crashing.
+    import gevent
+
+    if label:
+        svc_logger.info("%s consumer started on stream '%s'", label, stream)
+    while True:
+        try:
+            msgs = read_pending_then_new(get_bus(pool), stream, group)
+            if msgs:
+                gevent.joinall([gevent.spawn(handler, mid, pl) for mid, pl in msgs])
+        except Exception as exc:
+            svc_logger.error("%s consumer error, retrying in 1s: %s", label or stream, exc)
+            time.sleep(1)
 
 
 def _xreadgroup(bus, stream, group, start_id, block):

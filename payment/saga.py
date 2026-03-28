@@ -1,7 +1,6 @@
 # payment saga participant — redis streams, at-least-once delivery via pending re-read
 
 import uuid
-import time
 import json
 import logging
 
@@ -14,6 +13,7 @@ from common.streams import (
     publish,
     read_pending_then_new,
     ack,
+    run_consumer,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,35 +179,11 @@ def _handle_internal_message(msg_id: str, payload: dict):
 
 
 def start_gateway_consumer():
-    # consume gateway.payment; spawn one greenlet per message so the batch runs concurrently
-    import gevent
-    logger.info("Payment gateway consumer started on stream '%s'", GATEWAY_STREAM)
-    while True:
-        try:
-            msgs = read_pending_then_new(get_bus(_bus_pool), GATEWAY_STREAM, GROUP_GATEWAY)
-            if msgs:
-                gevent.joinall(
-                    [gevent.spawn(_handle_gateway_message, mid, pl) for mid, pl in msgs]
-                )
-        except Exception as exc:
-            logger.error("Payment gateway consumer error, retrying in 1s: %s", exc)
-            time.sleep(1)
+    run_consumer(_bus_pool, GATEWAY_STREAM, GROUP_GATEWAY, _handle_gateway_message, logger, "Payment gateway")
 
 
 def start_internal_consumer():
-    # consume internal.payment; same concurrent pattern as gateway consumer
-    import gevent
-    logger.info("Payment internal consumer started on stream '%s'", INTERNAL_STREAM)
-    while True:
-        try:
-            msgs = read_pending_then_new(get_bus(_bus_pool), INTERNAL_STREAM, GROUP_INTERNAL)
-            if msgs:
-                gevent.joinall(
-                    [gevent.spawn(_handle_internal_message, mid, pl) for mid, pl in msgs]
-                )
-        except Exception as exc:
-            logger.error("Payment internal consumer error, retrying in 1s: %s", exc)
-            time.sleep(1)
+    run_consumer(_bus_pool, INTERNAL_STREAM, GROUP_INTERNAL, _handle_internal_message, logger, "Payment internal")
 
 
 def recovery_saga(redis_pool):

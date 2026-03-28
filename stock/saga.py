@@ -2,7 +2,6 @@
 
 import json
 import uuid
-import time
 import logging
 
 import redis as redis_lib
@@ -14,6 +13,7 @@ from common.streams import (
     publish,
     read_pending_then_new,
     ack,
+    run_consumer,
 )
 
 logger = logging.getLogger(__name__)
@@ -266,35 +266,11 @@ def _handle_internal_message(msg_id: str, payload: dict):
 
 
 def start_gateway_consumer():
-    # consume gateway.stock; spawn one greenlet per message so the batch runs concurrently
-    import gevent
-    logger.info("Stock gateway consumer started on stream '%s'", GATEWAY_STREAM)
-    while True:
-        try:
-            msgs = read_pending_then_new(get_bus(_bus_pool), GATEWAY_STREAM, GROUP_GATEWAY)
-            if msgs:
-                gevent.joinall(
-                    [gevent.spawn(_handle_gateway_message, mid, pl) for mid, pl in msgs]
-                )
-        except Exception as exc:
-            logger.error("Stock gateway consumer error, retrying in 1s: %s", exc)
-            time.sleep(1)
+    run_consumer(_bus_pool, GATEWAY_STREAM, GROUP_GATEWAY, _handle_gateway_message, logger, "Stock gateway")
 
 
 def start_internal_consumer():
-    # consume internal.stock; same concurrent pattern as gateway consumer
-    import gevent
-    logger.info("Stock internal consumer started on stream '%s'", INTERNAL_STREAM)
-    while True:
-        try:
-            msgs = read_pending_then_new(get_bus(_bus_pool), INTERNAL_STREAM, GROUP_INTERNAL)
-            if msgs:
-                gevent.joinall(
-                    [gevent.spawn(_handle_internal_message, mid, pl) for mid, pl in msgs]
-                )
-        except Exception as exc:
-            logger.error("Stock internal consumer error, retrying in 1s: %s", exc)
-            time.sleep(1)
+    run_consumer(_bus_pool, INTERNAL_STREAM, GROUP_INTERNAL, _handle_internal_message, logger, "Stock internal")
 
 
 def recovery_saga(redis_pool):
