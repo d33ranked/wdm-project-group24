@@ -1,4 +1,4 @@
-# Distributed Data Management — Group 24
+# Distributed Data Management — Group 20
 
 Aditya Patil · Danil Vorotilov · Pedro Gomes Moreira · Ruben Van Seventer · Veselin Mitev
 
