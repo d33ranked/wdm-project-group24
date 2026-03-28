@@ -1,5 +1,3 @@
-# api gateway — http-to-stream bridge; assigns correlation_id, blocks on threading.Event, returns http response
-
 import gevent.monkey
 
 gevent.monkey.patch_all()
@@ -32,12 +30,11 @@ class StreamClient:
 
     def __init__(self, bus_pool):
         self._pool = bus_pool
-        self._pending: dict = {}  # correlation_id → (event, response | None)
+        self._pending: dict = {}
         self._pending_lock = threading.Lock()
         self._start_response_consumer()
 
     def send_request(self, stream: str, payload: dict, correlation_id: str) -> dict:
-        # register before publishing to avoid race where response arrives first
         event = threading.Event()
         with self._pending_lock:
             self._pending[correlation_id] = (event, None)
@@ -64,7 +61,7 @@ class StreamClient:
     def _start_response_consumer(self):
         def consume():
             bus = get_bus(self._pool)
-            last_id = "$"  # only responses produced after this instance started
+            last_id = "$"
             while True:
                 try:
                     result = bus.xread(
@@ -98,7 +95,7 @@ class StreamClient:
         with self._pending_lock:
             entry = self._pending.get(correlation_id)
             if entry is None:
-                return  # response arrived after timeout; discard
+                return
             event, _ = entry
             self._pending[correlation_id] = (event, payload)
         event.set()
@@ -176,7 +173,6 @@ def health():
 
 bus_pool = create_bus_pool()
 
-# pre-create response stream so xread doesn't error before any service has responded
 _startup_bus = get_bus(bus_pool)
 ensure_groups(_startup_bus, [(RESPONSE_STREAM, "gateway-init")])
 

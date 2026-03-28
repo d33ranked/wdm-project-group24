@@ -59,7 +59,6 @@ def create_order(user_id: str):
 
 @app.post("/batch_init/<n>/<n_items>/<n_users>/<item_price>")
 def batch_init(n: int, n_items: int, n_users: int, item_price: int):
-    # each order gets two random items and a random user; used by test harness
     n, n_items, n_users, item_price = (
         int(n),
         int(n_items),
@@ -113,7 +112,6 @@ def add_item(order_id: str, item_id: str, quantity: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    # fetch item price directly from stock service via http
     stock_reply = tpc.send_get_request(f"{STOCK_SERVICE_URL}/find/{item_id}")
     if stock_reply.status_code != 200:
         abort(400, f"Item: {item_id} does not exist!")
@@ -126,7 +124,6 @@ def add_item(order_id: str, item_id: str, quantity: int):
     items_list = json.loads(order_data.get("items", "[]"))
     total_cost = int(order_data.get("total_cost", 0))
 
-    # merge quantity if item already in order
     merged = False
     for entry in items_list:
         if entry[0] == item_id:

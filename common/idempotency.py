@@ -4,7 +4,6 @@ logger = logging.getLogger(__name__)
 
 
 def check_idempotency(r, idem_key: str):
-    # return cached (status_code, body) if key exists, else None
     if not idem_key:
         return None
     result = r.hmget(f"idem:{idem_key}", "status_code", "body")
@@ -14,7 +13,6 @@ def check_idempotency(r, idem_key: str):
 
 
 def save_idempotency(r, idem_key: str, status_code: int, body: str):
-    # persist result under idem key with 1-hour ttl
     if not idem_key:
         return
     pipe = r.pipeline(transaction=False)

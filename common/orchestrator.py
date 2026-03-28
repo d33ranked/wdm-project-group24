@@ -6,7 +6,6 @@ import redis as redis_lib
 logger = logging.getLogger(__name__)
 
 
-# public signals
 class StepFailed(Exception):
     """Raise from a step to abort the workflow and trigger compensation."""
 
@@ -17,7 +16,6 @@ def suspend():
     raise _AsyncSuspend()
 
 
-# workflow definition
 class Workflow:
     """Describes a durable sequence of steps.
 
@@ -41,15 +39,14 @@ class Workflow:
         self.on_failed = on_failed
 
 
-# orchestrator engine
 class Orchestrator:
     _PREFIX = "wf:"
     _TERMINAL = {"completed", "failed"}
 
     RUNNING = "running"
-    WAITING = "waiting"  # async forward step in flight
+    WAITING = "waiting"
     COMPENSATING = "compensating"
-    WAITING_COMP = "waiting_comp"  # async compensation step in flight
+    WAITING_COMP = "waiting_comp"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -59,7 +56,6 @@ class Orchestrator:
     def _r(self):
         return redis_lib.Redis(connection_pool=self._pool)
 
-    # public API
     def start(self, workflow: Workflow, context: dict) -> str:
         wf_id = str(uuid.uuid4())
         context = dict(context)
@@ -191,24 +187,18 @@ class Orchestrator:
                 "RECOVERY: resumed %d '%s' workflow(s)", recovered, workflow.name
             )
 
-    # internal
-
     def _recover_one(self, workflow, wf_id, raw, r):
         status = raw.get("status", "")
         ctx = json.loads(raw.get("context", "{}"))
         comp_step = int(raw.get("comp_step", "-1"))
 
         if status in (self.RUNNING, self.WAITING):
-            # re-run from stored step; sync steps re-execute cleanly,
-            # async steps re-publish and suspend again
             r.hset(f"{self._PREFIX}{wf_id}", "status", self.RUNNING)
             self._execute_forward(workflow, wf_id, r)
 
         elif status in (self.COMPENSATING, self.WAITING_COMP):
             r.hset(f"{self._PREFIX}{wf_id}", "status", self.COMPENSATING)
             if comp_step >= 0:
-                # comp_step was written before running that step, so re-run it
-                # by passing failed_at = comp_step + 1 (loop starts at comp_step)
                 self._execute_compensation(
                     workflow, wf_id, r, ctx, failed_at=comp_step + 1
                 )
@@ -222,7 +212,6 @@ class Orchestrator:
         ctx = json.loads(raw.get("context", "{}"))
 
         for idx in range(step_idx, len(workflow.steps)):
-            # write position BEFORE running — crash leaves a recoverable state
             r.hset(f"{self._PREFIX}{wf_id}", "step", str(idx))
             try:
                 result = workflow.steps[idx](ctx)
@@ -263,7 +252,6 @@ class Orchestrator:
         for idx in range(failed_at - 1, -1, -1):
             if idx >= len(workflow.compensation):
                 continue
-            # write comp_step BEFORE running so recovery knows where to resume
             r.hset(f"{self._PREFIX}{wf_id}", "comp_step", str(idx))
             try:
                 workflow.compensation[idx](ctx)
@@ -276,7 +264,6 @@ class Orchestrator:
                 logger.error(
                     "Compensation step %d failed for wf %s: %s", idx, wf_id, exc
                 )
-                # continue — attempt remaining compensations even if one errors
 
         r.hset(f"{self._PREFIX}{wf_id}", "status", self.FAILED)
         if workflow.on_failed:
@@ -286,7 +273,6 @@ class Orchestrator:
                 logger.error("on_failed callback failed for wf %s: %s", wf_id, exc)
 
 
-# internal signal
 class _AsyncSuspend(BaseException):
     """Control-flow signal raised by suspend(). Inherits from BaseException
     so it is not caught by bare 'except Exception' blocks."""

@@ -1,5 +1,3 @@
-# stock 2pc participant — prepare/commit/abort via lua scripts, consumed from tpc.stock stream
-
 import time
 import logging
 
@@ -20,7 +18,6 @@ _bus_pool = None
 
 
 def init_routes(app, redis_pool, scripts):
-    # register http routes (kept for direct test access via nginx) and store pool + scripts
     global _redis_pool, _scripts
     _redis_pool = redis_pool
     _scripts = scripts
@@ -79,7 +76,6 @@ def init_tpc_stream(bus_pool):
 
 
 def _dispatch(command: str, payload: dict, r) -> tuple:
-    # run lua script for given tpc command; returns (status_code, body)
     txn_id = payload.get("txn_id", "")
 
     if command == "prepare_batch":
@@ -130,9 +126,6 @@ def _dispatch(command: str, payload: dict, r) -> tuple:
 
 
 def _handle_message(msg_id: str, payload: dict):
-    # each message runs in its own greenlet so the entire batch is processed concurrently
-    # gevent yields during every redis i/o call, so 100 messages overlap their network waits
-    # instead of stacking sequentially (100 × 1.5ms → ~1.5ms wall time for the batch)
     correlation_id = payload.get("correlation_id")
     command = payload.get("command")
     r = redis_lib.Redis(connection_pool=_redis_pool)
@@ -154,14 +147,12 @@ def _handle_message(msg_id: str, payload: dict):
 
 
 def start_tpc_consumer():
-    # consume tpc.stock commands; ack after response published for at-least-once delivery
     import gevent
     logger.info("Stock TPC consumer started on stream '%s'", TPC_STREAM)
     while True:
         try:
             msgs = read_pending_then_new(get_bus(_bus_pool), TPC_STREAM, TPC_GROUP)
             if msgs:
-                # spawn one greenlet per message and wait for all to finish before next read
                 gevent.joinall([gevent.spawn(_handle_message, mid, pl) for mid, pl in msgs])
         except Exception as exc:
             logger.error("Stock TPC consumer error, retrying in 1s: %s", exc)
@@ -169,7 +160,6 @@ def start_tpc_consumer():
 
 
 def recovery(redis_pool, scripts):
-    # coordinator (order service) drives all recovery; prepared keys have 600s ttl as safety net
     print(
         "RECOVERY STOCK: coordinator-driven — no participant-side action needed",
         flush=True,

@@ -24,12 +24,10 @@ TRANSACTION_MODE = os.environ.get("TRANSACTION_MODE", "TPC")
 app = Flask("payment-service")
 logger = logging.getLogger(__name__)
 
-# create redis connection pool (payment data) and message bus pool
 redis_pool = create_redis_pool("PAYMENT")
 setup_flask_lifecycle(app, redis_pool, "PAYMENT")
 bus_pool = create_bus_pool()
 
-# register all lua scripts once at startup — SHA1-cached in Redis after first call
 _scripts = LuaScripts(redis_lib.Redis(connection_pool=redis_pool))
 
 
@@ -43,7 +41,6 @@ def create_user():
 @app.post("/batch_init/<n>/<starting_money>")
 def batch_init_users(n: int, starting_money: int):
     n, starting_money = int(n), int(starting_money)
-    # batch all hset commands in a single round-trip
     pipe = g.redis.pipeline(transaction=False)
     for i in range(n):
         pipe.hset(f"user:{i}", mapping={"credit": str(starting_money)})
@@ -68,10 +65,8 @@ def add_credit(user_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    # hexists first — HINCRBY on a missing key would silently create it
     if not g.redis.hexists(f"user:{user_id}", "credit"):
         abort(400, f"User: {user_id} not found!")
-    # HINCRBY is atomic — safe without a lock
     new_credit = g.redis.hincrby(f"user:{user_id}", "credit", int(amount))
 
     body = f"User: {user_id} credit updated to: {new_credit}"
@@ -88,7 +83,6 @@ def remove_credit(user_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    # deduct_credit lua: atomically checks credit >= amount then deducts
     try:
         new_credit = _scripts.deduct_credit(
             keys=[f"user:{user_id}"],

@@ -24,12 +24,10 @@ TRANSACTION_MODE = os.environ.get("TRANSACTION_MODE", "TPC")
 app = Flask("stock-service")
 logger = logging.getLogger(__name__)
 
-# create redis connection pool (stock data) and message bus pool
 redis_pool = create_redis_pool("STOCK")
 setup_flask_lifecycle(app, redis_pool, "STOCK")
 bus_pool = create_bus_pool()
 
-# register all lua scripts once at startup — SHA1-cached in Redis after first call
 _scripts = LuaScripts(redis_lib.Redis(connection_pool=redis_pool))
 
 
@@ -43,7 +41,6 @@ def create_item(price: int):
 @app.post("/batch_init/<n>/<starting_stock>/<item_price>")
 def batch_init_users(n: int, starting_stock: int, item_price: int):
     n, starting_stock, item_price = int(n), int(starting_stock), int(item_price)
-    # batch all hset commands in a single round-trip
     pipe = g.redis.pipeline(transaction=False)
     for i in range(n):
         pipe.hset(
@@ -71,10 +68,8 @@ def add_stock(item_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    # hexists first — HINCRBY on a missing key would silently create it
     if not g.redis.hexists(f"item:{item_id}", "stock"):
         abort(400, f"Item: {item_id} not found!")
-    # HINCRBY is atomic — safe without a lock
     new_stock = g.redis.hincrby(f"item:{item_id}", "stock", int(amount))
 
     body = f"Item: {item_id} stock updated to: {new_stock}"
@@ -91,7 +86,6 @@ def remove_stock(item_id: str, amount: int):
     if cached is not None:
         return Response(cached[1], status=cached[0])
 
-    # deduct_stock_batch lua: atomically checks stock >= amount then deducts
     try:
         _scripts.deduct_stock_batch(
             keys=[f"item:{item_id}"],

@@ -89,14 +89,7 @@ def _publish_internal_request(
     )
 
 
-# workflow step functions
-#
-# each function receives ctx (the serialisable context dict) and does exactly one piece of real work.
-# async steps publish a message and call suspend(); the consumer thread will call orchestrator.resume() or .fail() when the response arrives.
-
-
 def _step_subtract_stock(ctx):
-    # publish subtract_batch to stock service and wait for its response
     wf_id = ctx["wf_id"]
     batch_items = [
         {"item_id": iid, "amount": qty} for iid, qty in ctx["items_quantities"].items()
@@ -114,7 +107,6 @@ def _step_subtract_stock(ctx):
 
 
 def _step_charge_payment(ctx):
-    # publish pay to payment service and wait for its response
     wf_id = ctx["wf_id"]
     corr_id = f"{wf_id}:payment:pay"
     _publish_internal_request(
@@ -128,14 +120,12 @@ def _step_charge_payment(ctx):
 
 
 def _step_mark_paid(ctx):
-    # sync: mark order as paid and record idempotency key for the gateway
     r = _get_r()
     mark_paid(r, ctx["order_id"])
     save_idempotency(r, ctx["idempotency_key"], 200, "Checkout successful")
 
 
 def _comp_add_stock(ctx):
-    # compensation for step 0: add stock back and wait for confirmation
     wf_id = ctx["wf_id"]
     batch_items = [
         {"item_id": iid, "amount": qty} for iid, qty in ctx["items_quantities"].items()
@@ -153,14 +143,12 @@ def _comp_add_stock(ctx):
 
 
 def _on_complete(ctx):
-    # called by the engine once all forward steps succeed
     _publish_gateway_response(
         ctx["original_correlation_id"], 200, "Checkout successful"
     )
 
 
 def _on_failed(ctx):
-    # called by the engine once all compensation steps finish
     _publish_gateway_response(
         ctx["original_correlation_id"],
         400,
@@ -171,19 +159,15 @@ def _on_failed(ctx):
 CHECKOUT_WORKFLOW = Workflow(
     name="checkout_saga",
     steps=[_step_subtract_stock, _step_charge_payment, _step_mark_paid],
-    # compensation[0] undoes step[0]: restore stock
     compensation=[_comp_add_stock],
     on_complete=_on_complete,
     on_failed=_on_failed,
 )
 
-# correlation_id suffixes that map to forward step responses
 _RESUME_SUFFIXES = [":stock:subtract_batch", ":payment:pay"]
-# correlation_id suffix that maps to a compensation step response
 _COMP_SUFFIX = ":stock:rollback"
 
 
-# public API
 def handle_checkout_saga(r, order_id: str, headers: dict):
     idem_key = headers.get("Idempotency-Key") or headers.get("idempotency-key")
     correlation_id = headers.get("X-Correlation-Id") or headers.get("x-correlation-id")
@@ -218,14 +202,13 @@ def handle_checkout_saga(r, order_id: str, headers: dict):
         },
     )
 
-    return None  # response delivered async via _publish_gateway_response
+    return None
 
 
 def handle_internal_response(payload):
     """Dispatch one message from the internal.responses stream."""
     correlation_id = payload.get("correlation_id", "")
 
-    # price-lookup fast path (used by addItem, not the saga)
     with _pending_price_lookups_lock:
         if correlation_id in _pending_price_lookups:
             event, _ = _pending_price_lookups[correlation_id]
@@ -233,7 +216,6 @@ def handle_internal_response(payload):
             event.set()
             return
 
-    # forward step responses
     for suffix in _RESUME_SUFFIXES:
         if correlation_id.endswith(suffix):
             wf_id = correlation_id[: -len(suffix)]
@@ -247,7 +229,6 @@ def handle_internal_response(payload):
                 _orchestrator.fail(CHECKOUT_WORKFLOW, wf_id, error)
             return
 
-    # compensation step response
     if correlation_id.endswith(_COMP_SUFFIX):
         wf_id = correlation_id[: -len(_COMP_SUFFIX)]
         _orchestrator.resume_comp(CHECKOUT_WORKFLOW, wf_id)
@@ -365,7 +346,6 @@ def route_gateway_message(payload, r):
 
 
 def _fetch_item_price(item_id: str):
-    # block until stock service responds with item price; returns response dict or None on timeout
     corr_id = str(uuid.uuid4())
     event = threading.Event()
 
@@ -402,7 +382,6 @@ def start_gateway_consumer():
                     )
                     result = (400, {"error": "Internal server error"})
 
-                # checkout returns None — response sent async by saga handlers
                 if result is not None:
                     _publish_gateway_response(correlation_id, result[0], result[1])
 

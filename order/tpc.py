@@ -2,16 +2,14 @@ import json
 import uuid
 import time
 import logging
-import threading
-from collections import defaultdict
-from time import perf_counter
-
-import redis as redis_lib
 import requests
+import threading
+import redis as redis_lib
+from time import perf_counter
+from collections import defaultdict
 from flask import g, abort, Response
-
-from common.orchestrator import Orchestrator, Workflow, StepFailed
 from common.streams import get_bus, ensure_groups, publish
+from common.orchestrator import Orchestrator, Workflow, StepFailed
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +33,6 @@ class TpcStreamClient:
         self._start_response_consumer()
 
     def send(self, stream: str, payload: dict, correlation_id: str) -> dict:
-        # register before publishing to avoid race where response arrives first
         event = threading.Event()
         with self._pending_lock:
             self._pending[correlation_id] = (event, None)
@@ -64,7 +61,7 @@ class TpcStreamClient:
     def _start_response_consumer(self):
         def consume():
             bus = get_bus(self._pool)
-            last_id = "$"  # only responses produced after this instance started
+            last_id = "$"
             while True:
                 try:
                     result = bus.xread(
@@ -98,7 +95,7 @@ class TpcStreamClient:
         with self._pending_lock:
             entry = self._pending.get(correlation_id)
             if entry is None:
-                return  # response to a timed-out command — discard
+                return
             event, _ = entry
             self._pending[correlation_id] = (event, payload)
         event.set()
@@ -122,7 +119,6 @@ def _publish(stream: str, payload: dict):
     publish(bus, stream, payload)
 
 
-# used only for addItem price lookup — not part of the TPC protocol
 def send_get_request(url):
     try:
         start = perf_counter()
@@ -133,7 +129,7 @@ def send_get_request(url):
         abort(400, "Requests error")
 
 
-_LOCK_TTL_S = 60  # checkout lock ttl in seconds
+_LOCK_TTL_S = 60
 
 
 def _acquire_checkout_lock(r, order_id: str, lock_token: str) -> bool:
@@ -153,7 +149,6 @@ def _release_checkout_lock(r, order_id: str, lock_token: str):
     release_script(keys=[f"checkout-lock:{order_id}"], args=[lock_token])
 
 
-# workflow steps
 def _step_prepare_stock(ctx):
     batch_items = [{"item_id": iid, "quantity": qty} for iid, qty in ctx["items"]]
     corr_id = f"{ctx['wf_id']}:stock:prepare_batch"
@@ -189,7 +184,6 @@ def _step_prepare_payment(ctx):
 
 
 def _step_commit(ctx):
-    # fire-and-forget: at-least-once delivery + idempotent participant scripts guarantee commit
     _publish(
         TPC_STOCK_STREAM,
         {
@@ -243,9 +237,6 @@ CHECKOUT_WORKFLOW = Workflow(
 )
 
 
-# public API
-
-
 def checkout_tpc(order_id: str):
     r = g.redis
     lock_token = str(uuid.uuid4())
@@ -271,7 +262,6 @@ def checkout_tpc(order_id: str):
         if not items_quantities:
             return Response("Order has no items.", status=200)
 
-        # sorted so the context is deterministic (helps with debugging)
         context_items = [[iid, qty] for iid, qty in sorted(items_quantities.items())]
 
         wf_id = _orchestrator.start(
