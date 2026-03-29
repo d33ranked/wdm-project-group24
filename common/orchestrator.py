@@ -161,6 +161,7 @@ class Orchestrator:
         r = self._r()
         cursor = 0
         recovered = 0
+        print(f"Recovering workflow: {workflow.name}", flush=True)
         while True:
             cursor, keys = r.scan(cursor, match=f"{self._PREFIX}*", count=100)
             for key in keys:
@@ -175,6 +176,13 @@ class Orchestrator:
                     wf_id,
                     raw.get("status"),
                     raw.get("step"),
+                )
+                print(
+                    "RECOVERY: wf=%s status=%s step=%s",
+                    wf_id,
+                    raw.get("status"),
+                    raw.get("step"),
+                    flush=True
                 )
                 recovered += 1
                 self._recover_one(workflow, wf_id, raw, r)

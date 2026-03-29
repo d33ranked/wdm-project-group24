@@ -7,6 +7,7 @@ RUN pip install -r requirements.txt
 
 COPY common/ ./common/
 COPY payment/app.py payment/tpc.py payment/saga.py ./
+# COPY payment/app.py payment/tpc_new.py payment/saga_new.py ./
 
 ENV PYTHONUNBUFFERED=1
 

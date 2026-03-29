@@ -83,7 +83,7 @@ def docker_cmd(cmd: str):
 def docker_exec_redis(container: str, *cmd_args):
     # execute redis-cli inside container; args passed directly, no shell splitting
     subprocess.run(
-        ["docker", "exec", container, "redis-cli"] + list(cmd_args),
+        ["sudo", "docker", "exec", container, "redis-cli"] + list(cmd_args),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -96,7 +96,7 @@ def get_redis_master_container(master_name: str) -> str:
     # falls back to the original primary container if sentinel is unreachable.
     result = subprocess.run(
         [
-            "docker", "exec", "wdm-project-group24-sentinel-1-1",
+            "sudo", "docker", "exec", "wdm-project-group24-sentinel-1-1",
             "redis-cli", "-p", "26379",
             "SENTINEL", "GET-MASTER-ADDR-BY-NAME", master_name,
         ],
@@ -157,10 +157,10 @@ def start_stack(mode: str, skip_build: bool = False, no_restart: bool = False):
     env = _compose_env(mode)
     print(f"\n  Stack  Mode={mode}  SkipBuild={skip_build}  NoRestart={no_restart}\n")
     if not no_restart:
-        _run("docker compose down -v --remove-orphans", env=env)
+        _run("sudo docker compose down -v --remove-orphans", env=env)
     if not skip_build:
-        _run("docker compose build --quiet", env=env)
-    _run("docker compose up -d", env=env)
+        _run("sudo docker compose build --quiet", env=env)
+    _run("sudo docker compose up -d", env=env)
     print()
 
 

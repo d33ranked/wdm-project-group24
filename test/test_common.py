@@ -789,7 +789,7 @@ def test_payment_redis_aof_durability():
         json_field(api("GET", f"/payment/find_user/{user}"), "credit") == 999,
     )
 
-    docker_cmd("docker restart wdm-project-group24-redis-payment-1")
+    docker_cmd("sudo docker restart wdm-project-group24-redis-payment-1")
     wait_for_service(f"/payment/find_user/{user}")
     time.sleep(2)
 
@@ -821,7 +821,7 @@ def test_stock_redis_aof_durability():
         json_field(api("GET", f"/stock/find/{item}"), "stock") == 42,
     )
 
-    docker_cmd("docker restart wdm-project-group24-redis-stock-1")
+    docker_cmd("sudo docker restart wdm-project-group24-redis-stock-1")
     wait_for_service(f"/stock/find/{item}")
     time.sleep(2)
 
@@ -918,9 +918,9 @@ def test_stock_service_crash_mid_batch():
 
     def kill_and_restart():
         time.sleep(0.1)
-        docker_cmd(f"docker stop {SVC}")
+        docker_cmd(f"sudo docker stop {SVC}")
         time.sleep(3)
-        docker_cmd(f"docker start {SVC}")
+        docker_cmd(f"sudo docker start {SVC}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=N + 1) as pool:
         killer = pool.submit(kill_and_restart)
@@ -953,7 +953,7 @@ def test_stock_service_crash_mid_batch():
 
 def test_redis_bus_restart_recovery():
     # kill the message bus, let it restart, verify checkouts still work
-    docker_cmd("docker restart wdm-project-group24-redis-bus-1")
+    docker_cmd("sudo docker restart wdm-project-group24-redis-bus-1")
     wait_for_service("/orders/create/healthcheck", timeout=90)
     time.sleep(5)
 

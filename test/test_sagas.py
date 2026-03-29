@@ -81,9 +81,9 @@ def test_participant_crash_recovery():
     order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
     api("POST", f"/orders/addItem/{order}/{item}/{ITEM_QTY}")
 
-    docker_cmd(f"docker stop {CONTAINER}")
+    docker_cmd(f"sudo docker stop {CONTAINER}")
     subprocess.Popen(
-        f"sleep 3 && docker start {CONTAINER}",
+        f"sleep 3 && sudo docker start {CONTAINER}",
         shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
@@ -121,7 +121,7 @@ def test_coordinator_crash_recovery():
     order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
     api("POST", f"/orders/addItem/{order}/{item}/{ITEM_QTY}")
 
-    docker_cmd(f"docker stop {ORDER_CONTAINER}")
+    docker_cmd(f"sudo docker stop {ORDER_CONTAINER}")
 
     wf_id          = str(uuid.uuid4())
     stock_idem_key = f"{wf_id}:stock:subtract_batch"
@@ -157,7 +157,7 @@ def test_coordinator_crash_recovery():
     )
     docker_exec_redis(STOCK_DB, "EXPIRE", f"idem:{stock_idem_key}", "3600")
 
-    docker_cmd(f"docker start {ORDER_CONTAINER}")
+    docker_cmd(f"sudo docker start {ORDER_CONTAINER}")
     wait_for_service(f"/orders/find/{order}", timeout=90)
     time.sleep(15)
 
@@ -180,6 +180,8 @@ def test_coordinator_crash_recovery():
         check("Recovery Resolved Stuck Saga By Completing — Stock, Credit, And Order All Reflect The Checkout", True)
     elif rolled_back:
         check("Recovery Resolved Stuck Saga By Compensating — All Services Restored To Original State", True)
+    else:
+        print(f"Failed test. \nexpected stock was: {expected_stock}, actually was: {stock_val}. \nexpected credit was: {expected_credit}, actually was: {credit_val}\npaid_val was: {paid_val}")
 
 
 def test_saga_double_checkout_prevented():
@@ -295,7 +297,7 @@ def test_pending_message_redelivery():
     item = json_field(api("POST", "/stock/item/create/1"), "item_id")
     api("POST", f"/stock/add/{item}/{INITIAL}")
 
-    docker_cmd(f"docker stop {CONTAINER}")
+    docker_cmd(f"sudo docker stop {CONTAINER}")
 
     idem_key = "pending-redelivery-test"
     subprocess.Popen(
@@ -307,7 +309,7 @@ def test_pending_message_redelivery():
     )
     time.sleep(2)   # give gateway time to publish the message to the stream
 
-    docker_cmd(f"docker start {CONTAINER}")
+    docker_cmd(f"sudo docker start {CONTAINER}")
     wait_for_service(f"/stock/find/{item}", timeout=60)
     time.sleep(3)   # allow consumer loop to process the pending entry
 

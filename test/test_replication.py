@@ -33,7 +33,7 @@ def test_sentinel_storage_primary_failover():
     )
 
     # SIGKILL: no flush, no graceful shutdown — hardest possible failure
-    docker_cmd(f"docker kill {_C_PAYMENT_PRIMARY}")
+    docker_cmd(f"sudo docker kill {_C_PAYMENT_PRIMARY}")
     time.sleep(_FAILOVER_WAIT_S)
     wait_for_service(f"/payment/find_user/{user}", timeout=30)
 
@@ -59,7 +59,7 @@ def test_sentinel_storage_primary_failover():
     )
 
     # bring the old primary back; sentinel will demote it to replica automatically
-    docker_cmd(f"docker start {_C_PAYMENT_PRIMARY}")
+    docker_cmd(f"sudo docker start {_C_PAYMENT_PRIMARY}")
     time.sleep(5)
 
 
@@ -83,7 +83,7 @@ def test_sentinel_coordinator_db_failover():
 
     def kill_order_db():
         time.sleep(0.05)  # let checkout enter the tpc flow first
-        docker_cmd(f"docker kill {_C_ORDER_PRIMARY}")
+        docker_cmd(f"sudo docker kill {_C_ORDER_PRIMARY}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         killer_fut = pool.submit(kill_order_db)
@@ -95,7 +95,7 @@ def test_sentinel_coordinator_db_failover():
 
     # restart order-service: recovery_tpc runs on startup and resolves the
     # incomplete txn against the now-promoted redis-order replica
-    docker_cmd(f"docker restart {_C_ORDER_SVC}")
+    docker_cmd(f"sudo docker restart {_C_ORDER_SVC}")
     wait_for_service(f"/orders/find/{order}", timeout=60)
     time.sleep(3)
 
@@ -117,7 +117,7 @@ def test_sentinel_coordinator_db_failover():
         check("Aborted: Stock Fully Restored", stock == STOCK, f"stock={stock}")
         check("Aborted: Credit Fully Restored", credit == CREDIT, f"credit={credit}")
 
-    docker_cmd(f"docker start {_C_ORDER_PRIMARY}")
+    docker_cmd(f"sudo docker start {_C_ORDER_PRIMARY}")
     time.sleep(5)
 
 
@@ -146,7 +146,7 @@ def test_sentinel_bus_primary_failover_inflight():
 
     def kill_bus():
         time.sleep(0.1)
-        docker_cmd(f"docker kill {_C_BUS_PRIMARY}")
+        docker_cmd(f"sudo docker kill {_C_BUS_PRIMARY}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=N + 1) as pool:
         killer = pool.submit(kill_bus)
@@ -177,7 +177,7 @@ def test_sentinel_bus_primary_failover_inflight():
         f"stock={stock} winners={winners} initial={STOCK}",
     )
 
-    docker_cmd(f"docker start {_C_BUS_PRIMARY}")
+    docker_cmd(f"sudo docker start {_C_BUS_PRIMARY}")
     time.sleep(5)
 
 
@@ -188,7 +188,7 @@ def test_sentinel_quorum_one_sentinel_down():
     STOCK = 5
     CREDIT = 300
 
-    docker_cmd(f"docker kill {_C_SENTINEL_1}")
+    docker_cmd(f"sudo docker kill {_C_SENTINEL_1}")
     time.sleep(2)  # let the cluster notice one sentinel is gone
 
     item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
@@ -198,7 +198,7 @@ def test_sentinel_quorum_one_sentinel_down():
     order = json_field(api("POST", f"/orders/create/{user}"), "order_id")
     api("POST", f"/orders/addItem/{order}/{item}/1")
 
-    docker_cmd(f"docker kill {_C_STOCK_PRIMARY}")
+    docker_cmd(f"sudo docker kill {_C_STOCK_PRIMARY}")
     time.sleep(_FAILOVER_WAIT_S)
     wait_for_service(f"/stock/find/{item}", timeout=30)
 
@@ -223,8 +223,8 @@ def test_sentinel_quorum_one_sentinel_down():
         == CREDIT - PRICE,
     )
 
-    docker_cmd(f"docker start {_C_SENTINEL_1}")
-    docker_cmd(f"docker start {_C_STOCK_PRIMARY}")
+    docker_cmd(f"sudo docker start {_C_SENTINEL_1}")
+    docker_cmd(f"sudo docker start {_C_STOCK_PRIMARY}")
     time.sleep(5)
 
 
@@ -240,7 +240,7 @@ def test_sentinel_no_data_loss_on_promotion():
         api("POST", f"/stock/add/{iid}/100")
         item_ids.append(iid)
 
-    docker_cmd(f"docker kill {_C_STOCK_PRIMARY}")
+    docker_cmd(f"sudo docker kill {_C_STOCK_PRIMARY}")
     time.sleep(_FAILOVER_WAIT_S)
     wait_for_service(f"/stock/find/{item_ids[0]}", timeout=30)
 
@@ -253,7 +253,7 @@ def test_sentinel_no_data_loss_on_promotion():
         f"{surviving}/{N} survived",
     )
 
-    docker_cmd(f"docker start {_C_STOCK_PRIMARY}")
+    docker_cmd(f"sudo docker start {_C_STOCK_PRIMARY}")
     time.sleep(5)
 
 
