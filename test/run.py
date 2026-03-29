@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-# test runner — single command, no prompts
-# usage: python run.py [--mode TPC|SAGA] [--skip-build] [--no-restart]
+# test runner — no prompts; driven by environment (see start.py)
 
-import argparse
 import importlib
 import os
 import subprocess
@@ -17,20 +15,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-# alias __main__ → run so sibling modules share this namespace when imported
 if __name__ == "__main__":
     sys.modules["run"] = sys.modules["__main__"]
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
-MODE = "TPC"  # set by main() before any suite runs
+MODE = "TPC"
 
-# --- ansi colours ---
 _BLUE = "\033[94m"
 _GREEN = "\033[92m"
 _RED = "\033[91m"
 _RESET = "\033[0m"
 
-# --- pass/fail counters ---
 _pass_count = 0
 _fail_count = 0
 
@@ -46,7 +41,6 @@ def get_counts():
 
 
 def check(description: str, condition: bool, detail: str = ""):
-    # assert one expectation and print pass/fail
     global _pass_count, _fail_count
     if condition:
         print(f"      {_GREEN}[PASS]{_RESET} {description}")
@@ -60,17 +54,14 @@ def check(description: str, condition: bool, detail: str = ""):
 
 
 def api(method: str, path: str, **kwargs):
-    # fire http request against gateway; returns Response
     return requests.request(method, f"{BASE_URL}{path}", timeout=30, **kwargs)
 
 
 def json_field(response, key):
-    # safely extract json field from response
     return response.json().get(key)
 
 
 def docker_cmd(cmd: str):
-    # run docker command silently
     subprocess.run(
         cmd,
         shell=True,
@@ -81,7 +72,6 @@ def docker_cmd(cmd: str):
 
 
 def docker_exec_redis(container: str, *cmd_args):
-    # execute redis-cli inside container; args passed directly, no shell splitting
     subprocess.run(
         ["docker", "exec", container, "redis-cli"] + list(cmd_args),
         stdout=subprocess.DEVNULL,
@@ -90,13 +80,9 @@ def docker_exec_redis(container: str, *cmd_args):
 
 
 def get_redis_master_container(master_name: str) -> str:
-    # ask sentinel-1 which container is currently master for master_name.
-    # with announce-hostnames yes, sentinel returns the service hostname
-    # (e.g. "redis-stock-replica") after a failover, not the original primary.
-    # falls back to the original primary container if sentinel is unreachable.
     result = subprocess.run(
         [
-            "docker", "exec", "wdm-project-group24-sentinel-1-1",
+            "docker", "exec", "ddm-project-group20-sentinel-1-1",
             "redis-cli", "-p", "26379",
             "SENTINEL", "GET-MASTER-ADDR-BY-NAME", master_name,
         ],
@@ -105,13 +91,12 @@ def get_redis_master_container(master_name: str) -> str:
     )
     lines = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
     if lines:
-        hostname = lines[0]  # e.g. "redis-stock" or "redis-stock-replica"
-        return f"wdm-project-group24-{hostname}-1"
-    return f"wdm-project-group24-{master_name}-1"
+        hostname = lines[0]
+        return f"ddm-project-group20-{hostname}-1"
+    return f"ddm-project-group20-{master_name}-1"
 
 
 def wait_for_service(probe_path: str, timeout: int = 60):
-    # poll until endpoint returns non-5xx
     start = time.time()
     while time.time() - start < timeout:
         try:
@@ -124,11 +109,7 @@ def wait_for_service(probe_path: str, timeout: int = 60):
     return False
 
 
-# --- docker stack ---
-
-
 def _compose_env(mode: str) -> dict:
-    # build subprocess env with mode-specific vars, inheriting host env
     env = os.environ.copy()
     env["TRANSACTION_MODE"] = mode
     env["NGINX_CONF"] = (
@@ -138,7 +119,6 @@ def _compose_env(mode: str) -> dict:
 
 
 def _run(cmd: str, env: dict | None = None):
-    # run shell command with native TTY output (preserves Docker animations)
     print(f"  $ {cmd}")
     result = subprocess.run(
         cmd,
@@ -153,7 +133,6 @@ def _run(cmd: str, env: dict | None = None):
 
 
 def start_stack(mode: str, skip_build: bool = False, no_restart: bool = False):
-    # bring stack up in correct mode; optionally skip rebuild or full restart
     env = _compose_env(mode)
     print(f"\n  Stack  Mode={mode}  SkipBuild={skip_build}  NoRestart={no_restart}\n")
     if not no_restart:
@@ -165,7 +144,6 @@ def start_stack(mode: str, skip_build: bool = False, no_restart: bool = False):
 
 
 def wait_for_services(timeout: int = 90):
-    # poll gateway until all three services respond
     print("  Waiting For Services...")
     endpoints = [
         "/stock/item/create/1",
@@ -189,11 +167,8 @@ def wait_for_services(timeout: int = 90):
     sys.exit(1)
 
 
-# --- test runner ---
-
-
 def run_suite(label: str, module_name: str) -> tuple[int, int]:
-    # import module, run all TESTS entries without prompts; TESTS is (container, name, func)
+    global _fail_count
     mod = importlib.import_module(module_name)
     tests = getattr(mod, "TESTS", [])
 
@@ -225,30 +200,23 @@ def run_suite(label: str, module_name: str) -> tuple[int, int]:
     return case_pass, case_fail
 
 
+def _env_bool(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="WDM group 24 test runner")
-    parser.add_argument(
-        "--mode",
-        choices=["TPC", "SAGA"],
-        default="TPC",
-        help="transaction mode (default: TPC)",
-    )
-    parser.add_argument(
-        "--skip-build", action="store_true", help="skip docker compose build"
-    )
-    parser.add_argument(
-        "--no-restart",
-        action="store_true",
-        help="skip docker compose down/up (reuse running stack)",
-    )
-    args = parser.parse_args()
-
     global MODE
-    MODE = args.mode
+    mode = os.environ.get("TRANSACTION_MODE", "TPC").strip().upper()
+    if mode not in ("TPC", "SAGA"):
+        mode = "TPC"
+    MODE = mode
 
-    print(f"\n  GROUP 20 / MODE: {MODE}\n")
+    skip_build = _env_bool("DDM_SKIP_BUILD")
+    no_restart = _env_bool("DDM_NO_RESTART")
 
-    start_stack(MODE, skip_build=args.skip_build, no_restart=args.no_restart)
+    print(f"\n  Test Suite > MODE: {MODE}\n")
+
+    start_stack(MODE, skip_build=skip_build, no_restart=no_restart)
     wait_for_services()
 
     total_pass, total_fail = 0, 0
@@ -264,8 +232,6 @@ def main():
     total_pass += p
     total_fail += f
 
-    # replication suite runs last — it kills primaries and changes sentinel topology,
-    # which would break direct-redis writes in earlier suites if run first
     p, f = run_suite("REPLICATION SUITE", "test_replication")
     total_pass += p
     total_fail += f
