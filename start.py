@@ -8,6 +8,9 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 TEST_RUNNER = os.path.join(PROJECT_ROOT, "test", "run.py")
 
+DEFAULT_REDIS_MAX = 6000
+DEFAULT_STREAM_BATCH = 500
+
 _RST = "\033[0m"
 
 
@@ -60,10 +63,10 @@ def ask(prompt: str, a: str, b: str) -> int:
 _SUMMARY_INDENT = "  "
 
 
-def ask_int(label: str, default: int, *, replica: bool = False) -> int:
+def ask_int(label: str, default: int, *, scoped: bool = False) -> int:
     hint = _dim(f"(Press Enter For Default [{default}])")
-    prefix = _SUMMARY_INDENT if replica else ""
-    if replica:
+    prefix = _SUMMARY_INDENT if scoped else ""
+    if scoped:
         line = f"{prefix}{_wh(label)} {hint} {_wh('>')} "
     else:
         line = f"{prefix}{_cy(label)} {hint} {_cy('>')} "
@@ -74,7 +77,7 @@ def ask_int(label: str, default: int, *, replica: bool = False) -> int:
         if s.isdigit() and int(s) >= 1:
             return int(s)
         err = _red("Enter A Positive Integer, Or Press Enter For Default.")
-        print(f"{prefix}{err}" if replica else err)
+        print(f"{prefix}{err}" if scoped else err)
 
 
 def run(cmd: str, env: dict) -> None:
@@ -94,6 +97,33 @@ def env_for_mode(mode: str) -> dict:
     return e
 
 
+def _apply_replicas(env: dict, layout: int) -> None:
+    # matches docker-compose: gateway :-1, order/stock/payment :-2
+    if layout == 1:
+        env["GATEWAY_REPLICAS"] = "1"
+        env["ORDER_REPLICAS"] = "2"
+        env["STOCK_REPLICAS"] = "2"
+        env["PAYMENT_REPLICAS"] = "2"
+    else:
+        env["GATEWAY_REPLICAS"] = str(ask_int("Gateway Service", 1, scoped=True))
+        env["ORDER_REPLICAS"] = str(ask_int("Order Service", 2, scoped=True))
+        env["STOCK_REPLICAS"] = str(ask_int("Stock Service", 2, scoped=True))
+        env["PAYMENT_REPLICAS"] = str(ask_int("Payment Service", 2, scoped=True))
+
+
+def _apply_stream_tuning(env: dict, tune: int) -> None:
+    if tune == 1:
+        env["REDIS_MAX_CONNECTIONS"] = str(DEFAULT_REDIS_MAX)
+        env["STREAM_BATCH_SIZE"] = str(DEFAULT_STREAM_BATCH)
+    else:
+        env["REDIS_MAX_CONNECTIONS"] = str(
+            ask_int("Pool Max Connections", DEFAULT_REDIS_MAX, scoped=True)
+        )
+        env["STREAM_BATCH_SIZE"] = str(
+            ask_int("Stream Batch Size", DEFAULT_STREAM_BATCH, scoped=True)
+        )
+
+
 def _print_summary_rows(
     rows: list[tuple[str, str] | tuple[str, str, str]],
 ) -> None:
@@ -106,6 +136,18 @@ def _print_summary_rows(
         v = _dim(val) if tone == "grey" else _bl(val)
         print(f"{_SUMMARY_INDENT}{_wh(key.ljust(lw))}  {v}")
     print()
+
+
+def _summary_base_rows(env: dict) -> list:
+    return [
+        ("Transaction Mode", env["TRANSACTION_MODE"], "grey"),
+        ("Gateway Service", env["GATEWAY_REPLICAS"]),
+        ("Order Service", env["ORDER_REPLICAS"]),
+        ("Stock Service", env["STOCK_REPLICAS"]),
+        ("Payment Service", env["PAYMENT_REPLICAS"]),
+        ("Pool Max Connections", env["REDIS_MAX_CONNECTIONS"]),
+        ("Stream Batch Size", env["STREAM_BATCH_SIZE"]),
+    ]
 
 
 def teardown(env: dict) -> None:
@@ -125,31 +167,14 @@ def main() -> None:
 
         env = env_for_mode(mode)
 
-        if action == 1:
-            layout = ask("Replicas?", "2 Each", "Custom")
-            if layout == 1:
-                for k in (
-                    "GATEWAY_REPLICAS",
-                    "ORDER_REPLICAS",
-                    "STOCK_REPLICAS",
-                    "PAYMENT_REPLICAS",
-                ):
-                    env[k] = "2"
-            else:
-                env["GATEWAY_REPLICAS"] = str(ask_int("Gateway Service", 1, replica=True))
-                env["ORDER_REPLICAS"] = str(ask_int("Order Service", 2, replica=True))
-                env["STOCK_REPLICAS"] = str(ask_int("Stock Service", 2, replica=True))
-                env["PAYMENT_REPLICAS"] = str(ask_int("Payment Service", 2, replica=True))
+        layout = ask("Replicas?", "Compose Defaults", "Custom")
+        _apply_replicas(env, layout)
 
-            _print_summary_rows(
-                [
-                    ("Transaction Mode", mode, "grey"),
-                    ("Gateway Service", env["GATEWAY_REPLICAS"]),
-                    ("Order Service", env["ORDER_REPLICAS"]),
-                    ("Stock Service", env["STOCK_REPLICAS"]),
-                    ("Payment Service", env["PAYMENT_REPLICAS"]),
-                ],
-            )
+        tune = ask("Pool And Stream Batch?", "Project Defaults", "Custom")
+        _apply_stream_tuning(env, tune)
+
+        if action == 1:
+            _print_summary_rows(_summary_base_rows(env))
             print(_dim("Docker Compose Will Reset Volumes, Build Images, And Start Containers."))
             run("docker compose down -v --remove-orphans", env)
             run("docker compose build --quiet", env)
@@ -158,31 +183,20 @@ def main() -> None:
 
         else:
             skip = ask("Skip Build?", "Yes", "No") == 1
-            for k in (
-                "GATEWAY_REPLICAS",
-                "ORDER_REPLICAS",
-                "STOCK_REPLICAS",
-                "PAYMENT_REPLICAS",
-            ):
-                env[k] = "2"
+            env.pop("WDM_SKIP_BUILD", None)
+            if skip:
+                env["WDM_SKIP_BUILD"] = "1"
 
-            _print_summary_rows(
-                [
-                    ("Transaction Mode", mode, "grey"),
-                    ("Skip Image Build", "Yes" if skip else "No", "grey"),
-                    ("Gateway Service", env["GATEWAY_REPLICAS"]),
-                    ("Order Service", env["ORDER_REPLICAS"]),
-                    ("Stock Service", env["STOCK_REPLICAS"]),
-                    ("Payment Service", env["PAYMENT_REPLICAS"]),
-                ],
-            )
+            rows = _summary_base_rows(env)
+            rows.insert(1, ("Skip Image Build", "Yes" if skip else "No", "grey"))
+            _print_summary_rows(rows)
             print(_dim("Test Suite Starts Next; Stack Is Torn Down When It Finishes."))
 
-            argv = [sys.executable, TEST_RUNNER, "--mode", mode]
-            if skip:
-                argv.append("--skip-build")
-
-            result = subprocess.run(argv, cwd=PROJECT_ROOT, env=env)
+            result = subprocess.run(
+                [sys.executable, TEST_RUNNER],
+                cwd=PROJECT_ROOT,
+                env=env,
+            )
             teardown(env)
             sys.exit(result.returncode)
 
