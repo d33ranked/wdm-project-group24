@@ -1,3 +1,5 @@
+name: ddm-project-group20
+
 services:
   api-gateway:
     build:
@@ -33,7 +35,7 @@ services:
   nginx:
     image: nginx:1.25-bookworm
     volumes:
-      - ./${NGINX_CONF:-gateway_nginx.conf}:/etc/nginx/nginx.conf:ro
+      - ./${NGINX_CONF:-gateway_nginx_saga.conf}:/etc/nginx/nginx.conf:ro
     ports:
       - "8000:80"
     depends_on:
@@ -51,7 +53,7 @@ services:
     deploy:
       replicas: ${ORDER_REPLICAS:-2}
     environment:
-      - TRANSACTION_MODE=${TRANSACTION_MODE:-TPC}
+      - TRANSACTION_MODE=${TRANSACTION_MODE:-SAGA}
       - STOCK_SERVICE_URL=http://stock-service:5000
       - REDIS_MAX_CONNECTIONS=${REDIS_MAX_CONNECTIONS:-6000}
       - STREAM_BATCH_SIZE=${STREAM_BATCH_SIZE:-500}
@@ -96,7 +98,7 @@ services:
     deploy:
       replicas: ${STOCK_REPLICAS:-2}
     environment:
-      - TRANSACTION_MODE=${TRANSACTION_MODE:-TPC}
+      - TRANSACTION_MODE=${TRANSACTION_MODE:-SAGA}
       - REDIS_MAX_CONNECTIONS=${REDIS_MAX_CONNECTIONS:-6000}
       - STREAM_BATCH_SIZE=${STREAM_BATCH_SIZE:-500}
     command: gunicorn -k gevent -b 0.0.0.0:5000 -w 1 --worker-connections 6000 --timeout 30 --log-level=info app:app
@@ -140,7 +142,7 @@ services:
     deploy:
       replicas: ${PAYMENT_REPLICAS:-2}
     environment:
-      - TRANSACTION_MODE=${TRANSACTION_MODE:-TPC}
+      - TRANSACTION_MODE=${TRANSACTION_MODE:-SAGA}
       - REDIS_MAX_CONNECTIONS=${REDIS_MAX_CONNECTIONS:-6000}
       - STREAM_BATCH_SIZE=${STREAM_BATCH_SIZE:-500}
     command: gunicorn -k gevent -b 0.0.0.0:5000 -w 1 --worker-connections 6000 --timeout 30 --log-level=info app:app

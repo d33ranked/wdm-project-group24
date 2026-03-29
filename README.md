@@ -7,27 +7,27 @@ Aditya Patil · Danil Vorotilov · Pedro Gomes Moreira · Ruben Van Seventer · 
 ### Requirements
 
 - Docker + Docker Compose
-- Python 3.11+ (launcher and test runner)
+- Python 3.11+
 
 ### Start
-
-The recommended way is the interactive launcher:
 
 ```bash
 python start.py
 ```
 
-It will ask for the transaction mode, whether to start the system or run the benchmark suite, and replica counts. All defaults are sensible — just press Enter to accept them.
+The Launcher Asks Five Short Questions and Handles Everything Else.
 
-Alternatively, invoke Docker Compose directly:
 
-```bash
-# TPC mode (default)
-docker compose up -d --build
+| Prompt                             | Options                   | What It Does                                                                  |
+| ---------------------------------- | ------------------------- | ----------------------------------------------------------------------------- |
+| **Mode?**                          | TPC / SAGA                | Selects the Transaction Protocol                                              |
+| **Action?**                        | Start Stack / Run Tests   | Starts the System, or Builds and Runs the Full Benchmark                      |
+| **Replicas?**                      | Compose Defaults / Custom | Defaults: 1 Gateway, 2 of Each Service. Custom Lets You Set Each Individually |
+| **Pool And Stream Batch?**         | Project Defaults / Custom | Tunes the Redis Connection Pool Size and Stream Batch Size                    |
+| **Skip Build?** *(Run Tests Only)* | Yes / No                  | Skips `docker compose build` if Images Are Already Up to Date                 |
 
-# SAGA mode
-TRANSACTION_MODE=SAGA NGINX_CONF=gateway_nginx_saga.conf docker compose up -d --build
-```
+
+After the Benchmark Finishes the Stack Is Torn Down Automatically.
 
 ### Stop
 
@@ -37,51 +37,54 @@ docker compose down -v
 
 ## Configuration
 
-Pass as environment variables before `docker compose up`, or write to a `.env` file at the project root.
+`start.py` Sets All Variables Interactively. For Headless or CI Runs, Export Them as Environment Variables or Place a `.env` File at the Project Root — Docker Compose Picks It Up Automatically.
 
-| Variable           | Default              | Description                                                                         |
-| ------------------ | -------------------- | ----------------------------------------------------------------------------------- |
-| `TRANSACTION_MODE` | `TPC`                | Protocol to use. `TPC` for two-phase commit, `SAGA` for event-driven compensation.  |
-| `NGINX_CONF`       | `gateway_nginx.conf` | Nginx config file. Must be `gateway_nginx_saga.conf` when `TRANSACTION_MODE=SAGA`.  |
-| `ORDER_REPLICAS`   | `1`                  | Number of order-service containers to run.                                          |
-| `STOCK_REPLICAS`   | `1`                  | Number of stock-service containers to run.                                          |
-| `PAYMENT_REPLICAS` | `1`                  | Number of payment-service containers to run.                                        |
-| `GATEWAY_REPLICAS` | `1`                  | Number of api-gateway containers to run (SAGA mode only).                           |
+
+| Variable                | Default                   | Description                                                                                              |
+| ----------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `TRANSACTION_MODE`      | `SAGA`                    | Protocol to Use. `TPC` for Two-Phase Commit, `SAGA` for Event-Driven Compensation.                       |
+| `NGINX_CONF`            | `gateway_nginx_saga.conf` | Nginx Config File. Must Match the Selected `TRANSACTION_MODE`.                                           |
+| `GATEWAY_REPLICAS`      | `1`                       | Number of API Gateway Containers.                                                                        |
+| `ORDER_REPLICAS`        | `2`                       | Number of Order Service Containers.                                                                      |
+| `STOCK_REPLICAS`        | `2`                       | Number of Stock Service Containers.                                                                      |
+| `PAYMENT_REPLICAS`      | `2`                       | Number of Payment Service Containers.                                                                    |
+| `REDIS_MAX_CONNECTIONS` | `6000`                    | Connection Pool Size Per Redis Pool Per Service Worker.                                                  |
+| `STREAM_BATCH_SIZE`     | `500`                     | Messages Fetched Per `XREADGROUP` Call. All Messages in a Batch Are Processed Concurrently via `gevent`. |
+| `DDM_SKIP_BUILD`        | *(unset)*                 | Set to `1` to Skip `docker compose build` When Running the Test Suite Headlessly.                        |
+| `DDM_NO_RESTART`        | *(unset)*                 | Set to `1` to Skip `docker compose down/up` and Reuse the Running Stack.                                 |
+
 
 ## The Orchestrator
 
-Both protocols are driven by a single generic workflow engine in `common/orchestrator.py`. It knows nothing about orders or payments — it only knows how to run a list of Python functions in order, write its position to Redis before each step, and run them in reverse if something goes wrong.
+Both Protocols Are Driven by a Single Generic Workflow Engine in `common/orchestrator.py`. It Knows Nothing About Orders or Payments — It Only Knows How to Run a List of Python Functions in Order, Write Its Position to Redis Before Each Step, and Run Them in Reverse If Something Goes Wrong.
 
-**Write before you run.** Before executing step N, the engine writes "currently at step N" to Redis. If the process crashes mid-step, the position is already on disk. On restart, it reads the position and re-runs from there. Steps are idempotent, so re-running is always safe.
+**Write Before You Run.** Before Executing Step N, the Engine Writes "Currently at Step N" to Redis. If the Process Crashes Mid-Step, the Position Is Already on Disk. On Restart, It Reads the Position and Re-Runs From There. Steps Are Idempotent, so Re-Running Is Always Safe.
 
-**Steps and compensations.** A workflow is a list of forward steps and a matching list of undo steps. If a forward step fails, the engine runs the compensations in reverse — undoing only the steps that already succeeded.
+**Steps and Compensations.** A Workflow Is a List of Forward Steps and a Matching List of Undo Steps. If a Forward Step Fails, the Engine Runs the Compensations in Reverse — Undoing Only the Steps That Already Succeeded.
 
-**Sync vs. Async.** In 2PC mode all steps run synchronously — the engine sends a message, waits for the reply, and moves on. In SAGA mode each step publishes a message and calls `suspend()`, pausing the engine until a background consumer calls `resume()` (success) or `fail()` (failure) when the reply arrives. Compensation steps in SAGA mode work the same way.
+**Sync vs. Async.** In TPC Mode All Steps Run Synchronously — the Engine Sends a Message, Waits for the Reply, and Moves On. In SAGA Mode Each Step Publishes a Message and Calls `suspend()`, Pausing the Engine Until a Background Consumer Calls `resume()` (Success) or `fail()` (Failure) When the Reply Arrives. Compensation Steps in SAGA Mode Work the Same Way.
 
-**Recovery.** On every startup the engine scans Redis for workflow instances that never reached `completed` or `failed`, reads their stored position, and continues from exactly where they stopped.
+**Recovery.** On Every Startup the Engine Scans Redis for Workflow Instances That Never Reached `completed` or `failed`, Reads Their Stored Position, and Continues From Exactly Where They Stopped.
 
 ## Test Suite
 
-The test suite lives in `test/`. It is a standalone CLI — no external test framework. It builds the stack, runs all cases in order, and prints a pass/fail report.
+The Test Suite Lives in `test/`. It Is a Standalone CLI — No External Test Framework. It Builds the Stack, Runs All Cases in Order, and Prints a Pass/Fail Report.
 
 ### Run
 
-```bash
-cd test
-pip install -r ../requirements.txt
+Run via `python start.py` → Select **Run Tests**. The Launcher Builds the Stack, Runs All Suites in Order, and Tears Everything Down When Finished.
 
-python run.py                                    # 2PC mode, full build and fresh stack
-python run.py --mode SAGA                        # SAGA mode
-python run.py --skip-build                       # skip docker compose build
-python run.py --no-restart                       # reuse an already-running stack
-BASE_URL=http://192.168.1.10:8000 python run.py  # custom gateway address
+Install the Python Dependencies Beforehand If You Haven't Already:
+
+```bash
+pip install -r requirements.txt
 ```
 
 ### Suite Order
 
-1. Common — mode-agnostic correctness and durability
-2. 2PC or SAGA — protocol-specific correctness (selected by `--mode`)
-3. Replication — Sentinel failover and data durability (always runs last; it changes cluster topology)
+1. Common — Mode-Agnostic Correctness and Durability
+2. TPC or SAGA — Protocol-Specific Correctness (Driven by `TRANSACTION_MODE`)
+3. Replication — Sentinel Failover and Data Durability (Always Runs Last; It Changes Cluster Topology)
 
 ## Test Cases
 
@@ -121,7 +124,7 @@ BASE_URL=http://192.168.1.10:8000 python run.py  # custom gateway address
 | **Redis Bus Restart Recovery**         | Restarting the shared message bus does not prevent subsequent checkouts from completing.                         |
 
 
-### 2PC Suite
+### TPC Suite
 
 
 | Test                           | What It Verifies                                                                                                     |
@@ -158,12 +161,15 @@ BASE_URL=http://192.168.1.10:8000 python run.py  # custom gateway address
 ### Replication Suite
 
 
-| Test                                    | What It Verifies                                                                                                                      |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **Payment Primary SIGKILL**             | Data written before a hard kill of the payment primary survives on the promoted replica; checkouts continue through the new master.   |
-| **Coordinator DB SIGKILL Mid-Checkout** | Killing the order-service's Redis mid-checkout and restarting order-service resolves the transaction consistently with no data loss.  |
-| **Bus Primary SIGKILL With In-Flight**  | Killing the message bus during 10 concurrent checkouts results in no phantom charges or oversell after Sentinel promotes the replica. |
-| **One Sentinel Down**                   | Killing one of three sentinels still leaves quorum intact; a subsequent primary failure is correctly failed over.                     |
-| **50 Writes Before Primary SIGKILL**    | All 50 items written to a primary before a hard kill are readable from the promoted replica — zero data loss on promotion.            |
+| Test                                         | What It Verifies                                                                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **Payment Primary SIGKILL**                  | Data written before a hard kill of the payment primary survives on the promoted replica; checkouts continue through the new master.   |
+| **Coordinator DB SIGKILL Mid-Checkout**      | Killing the order-service's Redis mid-checkout and restarting order-service resolves the transaction consistently with no data loss.  |
+| **Bus Primary SIGKILL With In-Flight**       | Killing the message bus during 10 concurrent checkouts results in no phantom charges or oversell after Sentinel promotes the replica. |
+| **One Sentinel Down**                        | Killing one of three sentinels still leaves quorum intact; a subsequent primary failure is correctly failed over.                     |
+| **50 Writes Before Primary SIGKILL**         | All 50 items written to a primary before a hard kill are readable from the promoted replica — zero data loss on promotion.            |
+| **Service Scale-Out Correctness**            | Scaling stock-service to three replicas does not corrupt data; a full checkout deducts stock and credit exactly once.                 |
+| **Replica Killed, System Continues**         | Killing one of three order-service replicas does not interrupt the system; the remaining two handle new checkouts without errors.     |
+| **Concurrent Correctness Under Replication** | Ten concurrent checkouts with all services at three replicas produce no oversell and no phantom charges.                              |
 
 

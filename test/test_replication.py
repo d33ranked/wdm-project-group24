@@ -14,12 +14,12 @@ def _scale(service: str, count: int):
     docker_cmd(f"docker compose up -d --no-recreate --scale {service}={count}")
 
 # container names follow docker compose's <project>-<service>-<replica> pattern
-_C_ORDER_PRIMARY = "wdm-project-group24-redis-order-1"
-_C_STOCK_PRIMARY = "wdm-project-group24-redis-stock-1"
-_C_PAYMENT_PRIMARY = "wdm-project-group24-redis-payment-1"
-_C_BUS_PRIMARY = "wdm-project-group24-redis-bus-1"
-_C_SENTINEL_1 = "wdm-project-group24-sentinel-1-1"
-_C_ORDER_SVC = "wdm-project-group24-order-service-1"
+_C_ORDER_PRIMARY = "ddm-project-group20-redis-order-1"
+_C_STOCK_PRIMARY = "ddm-project-group20-redis-stock-1"
+_C_PAYMENT_PRIMARY = "ddm-project-group20-redis-payment-1"
+_C_BUS_PRIMARY = "ddm-project-group20-redis-bus-1"
+_C_SENTINEL_1 = "ddm-project-group20-sentinel-1-1"
+_C_ORDER_SVC = "ddm-project-group20-order-service-1"
 
 # sentinel detects a dead master after down-after-milliseconds (5 s) then
 # runs the election. allow 10 s total so the pool reconnects before we assert.
@@ -321,7 +321,7 @@ def test_service_replica_killed_system_continues():
     api("POST", f"/stock/add/{item}/{STOCK}")
 
     # Kill the third replica (container name follows compose naming)
-    docker_cmd("docker kill wdm-project-group24-order-service-3")
+    docker_cmd("docker kill ddm-project-group20-order-service-3")
     time.sleep(2)
 
     user = json_field(api("POST", "/payment/create_user"), "user_id")

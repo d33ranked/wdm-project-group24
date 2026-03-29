@@ -183,9 +183,9 @@ def main() -> None:
 
         else:
             skip = ask("Skip Build?", "Yes", "No") == 1
-            env.pop("WDM_SKIP_BUILD", None)
+            env.pop("DDM_SKIP_BUILD", None)
             if skip:
-                env["WDM_SKIP_BUILD"] = "1"
+                env["DDM_SKIP_BUILD"] = "1"
 
             rows = _summary_base_rows(env)
             rows.insert(1, ("Skip Image Build", "Yes" if skip else "No", "grey"))

@@ -279,7 +279,7 @@ def test_participant_crash_recovery():
     ITEM_QTY   = 2
     STOCK      = 5
     CREDIT     = 100
-    CONTAINER  = "wdm-project-group24-stock-service-1"
+    CONTAINER  = "ddm-project-group20-stock-service-1"
 
     user  = json_field(api("POST", "/payment/create_user"), "user_id")
     api("POST", f"/payment/add_funds/{user}/{CREDIT}")
@@ -318,7 +318,7 @@ def test_coordinator_crash_recovery():
     ITEM_QTY        = 2
     STOCK           = 10
     CREDIT          = 200
-    ORDER_CONTAINER = "wdm-project-group24-order-service-1"
+    ORDER_CONTAINER = "ddm-project-group20-order-service-1"
     ORDER_DB        = get_redis_master_container("redis-order")
     STOCK_DB        = get_redis_master_container("redis-stock")
 

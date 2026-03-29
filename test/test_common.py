@@ -747,7 +747,7 @@ def test_malformed_stream_message():
     # inject garbage into the stream; verify consumer survives and processes real messages
     stream = "tpc.stock" if run.MODE == "TPC" else "gateway.stock"
     docker_exec_redis(
-        "wdm-project-group24-redis-bus-1",
+        "ddm-project-group20-redis-bus-1",
         "XADD",
         stream,
         "*",
@@ -789,7 +789,7 @@ def test_payment_redis_aof_durability():
         json_field(api("GET", f"/payment/find_user/{user}"), "credit") == 999,
     )
 
-    docker_cmd("docker restart wdm-project-group24-redis-payment-1")
+    docker_cmd("docker restart ddm-project-group20-redis-payment-1")
     wait_for_service(f"/payment/find_user/{user}")
     time.sleep(2)
 
@@ -821,7 +821,7 @@ def test_stock_redis_aof_durability():
         json_field(api("GET", f"/stock/find/{item}"), "stock") == 42,
     )
 
-    docker_cmd("docker restart wdm-project-group24-redis-stock-1")
+    docker_cmd("docker restart ddm-project-group20-redis-stock-1")
     wait_for_service(f"/stock/find/{item}")
     time.sleep(2)
 
@@ -900,7 +900,7 @@ def test_stock_service_crash_mid_batch():
     STOCK = 20
     CREDIT = 500
     N = 5
-    SVC = "wdm-project-group24-stock-service-1"
+    SVC = "ddm-project-group20-stock-service-1"
 
     item = json_field(api("POST", f"/stock/item/create/{PRICE}"), "item_id")
     api("POST", f"/stock/add/{item}/{STOCK}")
@@ -953,7 +953,7 @@ def test_stock_service_crash_mid_batch():
 
 def test_redis_bus_restart_recovery():
     # kill the message bus, let it restart, verify checkouts still work
-    docker_cmd("docker restart wdm-project-group24-redis-bus-1")
+    docker_cmd("docker restart ddm-project-group20-redis-bus-1")
     wait_for_service("/orders/create/healthcheck", timeout=90)
     time.sleep(5)
 

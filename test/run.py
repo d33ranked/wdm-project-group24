@@ -82,7 +82,7 @@ def docker_exec_redis(container: str, *cmd_args):
 def get_redis_master_container(master_name: str) -> str:
     result = subprocess.run(
         [
-            "docker", "exec", "wdm-project-group24-sentinel-1-1",
+            "docker", "exec", "ddm-project-group20-sentinel-1-1",
             "redis-cli", "-p", "26379",
             "SENTINEL", "GET-MASTER-ADDR-BY-NAME", master_name,
         ],
@@ -92,8 +92,8 @@ def get_redis_master_container(master_name: str) -> str:
     lines = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
     if lines:
         hostname = lines[0]
-        return f"wdm-project-group24-{hostname}-1"
-    return f"wdm-project-group24-{master_name}-1"
+        return f"ddm-project-group20-{hostname}-1"
+    return f"ddm-project-group20-{master_name}-1"
 
 
 def wait_for_service(probe_path: str, timeout: int = 60):
@@ -211,10 +211,10 @@ def main():
         mode = "TPC"
     MODE = mode
 
-    skip_build = _env_bool("WDM_SKIP_BUILD")
-    no_restart = _env_bool("WDM_NO_RESTART")
+    skip_build = _env_bool("DDM_SKIP_BUILD")
+    no_restart = _env_bool("DDM_NO_RESTART")
 
-    print(f"\n  WDM Test Suite  MODE: {MODE}\n")
+    print(f"\n  Test Suite > MODE: {MODE}\n")
 
     start_stack(MODE, skip_build=skip_build, no_restart=no_restart)
     wait_for_services()
