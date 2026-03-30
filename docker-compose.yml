@@ -184,8 +184,7 @@ services:
     image: redis:7-alpine
     command: >
       redis-server
-      --appendonly yes
-      --appendfsync everysec
+      --appendonly no
       --maxmemory-policy noeviction
       --maxclients 20000
     healthcheck:
@@ -243,8 +242,7 @@ services:
     command: >
       redis-server
       --replicaof redis-bus 6379
-      --appendonly yes
-      --appendfsync everysec
+      --appendonly no
       --maxmemory-policy noeviction
       --maxclients 20000
     depends_on:

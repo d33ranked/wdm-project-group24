@@ -70,7 +70,7 @@ class Orchestrator:
                 "context": json.dumps(context),
             },
         )
-        self._execute_forward(workflow, wf_id, r)
+        self._execute_forward(workflow, wf_id, r, 0, context)
         return wf_id
 
     def resume(self, workflow: Workflow, wf_id: str, result: dict = None):
@@ -96,7 +96,7 @@ class Orchestrator:
                 "context": json.dumps(ctx),
             },
         )
-        self._execute_forward(workflow, wf_id, r)
+        self._execute_forward(workflow, wf_id, r, next_step, ctx)
 
     def fail(self, workflow: Workflow, wf_id: str, error: str = ""):
         """Signal that an async forward step failed.
@@ -194,7 +194,7 @@ class Orchestrator:
 
         if status in (self.RUNNING, self.WAITING):
             r.hset(f"{self._PREFIX}{wf_id}", "status", self.RUNNING)
-            self._execute_forward(workflow, wf_id, r)
+            self._execute_forward(workflow, wf_id, r, int(raw.get("step", "0")), ctx)
 
         elif status in (self.COMPENSATING, self.WAITING_COMP):
             r.hset(f"{self._PREFIX}{wf_id}", "status", self.COMPENSATING)
@@ -206,11 +206,7 @@ class Orchestrator:
                 step = int(raw.get("step", "0"))
                 self._execute_compensation(workflow, wf_id, r, ctx, failed_at=step)
 
-    def _execute_forward(self, workflow, wf_id, r):
-        raw = r.hgetall(f"{self._PREFIX}{wf_id}")
-        step_idx = int(raw.get("step", "0"))
-        ctx = json.loads(raw.get("context", "{}"))
-
+    def _execute_forward(self, workflow, wf_id, r, step_idx, ctx):
         for idx in range(step_idx, len(workflow.steps)):
             r.hset(f"{self._PREFIX}{wf_id}", "step", str(idx))
             try:
