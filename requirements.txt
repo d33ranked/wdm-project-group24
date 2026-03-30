@@ -1,2 +1,2 @@
+# Host Python 3.9+ — start.py and test/run.py enforce this at startup
 requests==2.32.2
-locust==2.38.1

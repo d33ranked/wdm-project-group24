@@ -4,6 +4,17 @@
 import os
 import subprocess
 import sys
+from typing import Union
+
+_MIN_PY = (3, 9)
+
+if sys.version_info < _MIN_PY:
+    print(
+        f"Need Python {_MIN_PY[0]}.{_MIN_PY[1]}+ (this interpreter is "
+        f"{sys.version_info.major}.{sys.version_info.minor}).",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 TEST_RUNNER = os.path.join(PROJECT_ROOT, "test", "run.py")
@@ -125,7 +136,7 @@ def _apply_stream_tuning(env: dict, tune: int) -> None:
 
 
 def _print_summary_rows(
-    rows: list[tuple[str, str] | tuple[str, str, str]],
+    rows: list[Union[tuple[str, str], tuple[str, str, str]]],
 ) -> None:
     print()
     keys = [r[0] for r in rows]

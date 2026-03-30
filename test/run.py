@@ -6,8 +6,19 @@ import os
 import subprocess
 import sys
 import time
+from typing import Optional
 
 import requests
+
+_MIN_PY = (3, 9)
+
+if sys.version_info < _MIN_PY:
+    print(
+        f"Need Python {_MIN_PY[0]}.{_MIN_PY[1]}+ (this interpreter is "
+        f"{sys.version_info.major}.{sys.version_info.minor}).",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
@@ -118,7 +129,7 @@ def _compose_env(mode: str) -> dict:
     return env
 
 
-def _run(cmd: str, env: dict | None = None):
+def _run(cmd: str, env: Optional[dict] = None):
     print(f"  $ {cmd}")
     result = subprocess.run(
         cmd,

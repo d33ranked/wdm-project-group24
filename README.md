@@ -7,7 +7,7 @@ Aditya Patil · Danil Vorotilov · Pedro Gomes Moreira · Ruben Van Seventer · 
 ### Requirements
 
 - Docker + Docker Compose
-- Python 3.11+
+- Python 3.9+ On The Host For `start.py` And `test/run.py` (Both Exit With A Clear Message If Older); Docker Service Images Use Python 3.12
 
 ### Start
 
