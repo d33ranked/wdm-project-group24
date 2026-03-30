@@ -114,19 +114,49 @@ def make_message_handler(get_bus_fn, get_r_fn, stream: str, group: str, response
 
 
 def run_gevent_consumer(bus_pool, stream: str, group: str, handler_fn, name: str = ""):
-    """Run a blocking gevent consumer loop for a stream group.
+    """Run a gevent consumer loop for a stream group.
 
-    Reads pending messages first (at-least-once delivery), then new ones.
-    Spawns one greenlet per message so the batch executes concurrently.
-    Retries on errors with a 1-second back-off.
+    Phase 1 — recovery: drains all pending messages from previous runs using
+    joinall per batch. This runs to completion before entering steady-state,
+    guaranteeing at-least-once replay of any messages that were consumed but
+    not ACKed before a crash.
+
+    Phase 2 — steady-state: reads only new messages (">") and spawns each into
+    a bounded gevent.pool.Pool. pool.spawn() blocks when the pool is full
+    (natural backpressure), but crucially a slow greenlet from one message
+    never blocks a fast message from starting. This eliminates the joinall
+    batch-fence sawtooth: the fence previously forced the consumer to wait for
+    the slowest message in a batch before it could read the next batch, causing
+    latency spikes whenever a handful of messages hit a Redis write stall.
     """
     import gevent
+    import gevent.pool
+
+    _POOL_SIZE = _STREAM_BATCH_SIZE * 4
+    pool = gevent.pool.Pool(_POOL_SIZE)
+
     logger.info("%s consumer started on stream '%s'", name, stream)
+
+    # ── Phase 1: replay any pending messages from before this startup ─────
     while True:
         try:
-            msgs = read_pending_then_new(get_bus(bus_pool), stream, group)
+            pending = _xreadgroup(get_bus(bus_pool), stream, group, "0", block=False)
+            if not pending:
+                break
+            gevent.joinall([gevent.spawn(handler_fn, mid, pl) for mid, pl in pending])
+        except Exception as exc:
+            logger.error("%s pending drain error, retrying in 1s: %s", name, exc)
+            time.sleep(1)
+
+    # ── Phase 2: steady-state fire-and-forget from new messages ──────────
+    while True:
+        try:
+            msgs = _xreadgroup(get_bus(bus_pool), stream, group, ">", block=True)
             if msgs:
-                gevent.joinall([gevent.spawn(handler_fn, mid, pl) for mid, pl in msgs])
+                for mid, pl in msgs:
+                    pool.spawn(handler_fn, mid, pl)
+                    # pool.spawn blocks here when pool is at capacity,
+                    # giving backpressure without a hard batch fence
         except Exception as exc:
             logger.error("%s consumer error, retrying in 1s: %s", name, exc)
             time.sleep(1)

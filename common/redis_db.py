@@ -154,7 +154,8 @@ class LuaScripts:
             -- Idempotency: if already prepared, return success immediately
             if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 
-            -- Check all items have sufficient stock
+            -- Validate and cache stock values in one pass
+            local stocks = {}
             for i = 1, n do
                 local item_key = KEYS[i + 1]
                 local qty = tonumber(ARGV[n + 1 + i])
@@ -165,14 +166,15 @@ class LuaScripts:
                 if stock < qty then
                     return redis.error_reply('INSUFFICIENT:' .. item_key)
                 end
+                stocks[i] = stock
             end
 
-            -- Deduct stock and record reservation
+            -- Deduct stock and record reservation using cached values
             for i = 1, n do
                 local item_key  = KEYS[i + 1]
                 local item_id   = ARGV[1 + i]
                 local qty       = tonumber(ARGV[n + 1 + i])
-                local new_stock = tonumber(redis.call('HGET', item_key, 'stock')) - qty
+                local new_stock = stocks[i] - qty
                 redis.call('HSET', item_key, 'stock', new_stock)
                 redis.call('HSET', KEYS[1], item_id, qty)
             end
