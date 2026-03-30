@@ -1,6 +1,5 @@
 import json
 import os
-import time
 import logging
 import requests
 import redis as redis_lib
@@ -13,7 +12,7 @@ from common.streams import (
     ensure_groups,
     publish,
     publish_response,
-    read_pending_then_new,
+    run_gevent_consumer,
     ack,
 )
 from operations import create_order, batch_init_orders, add_item_to_order
@@ -287,48 +286,38 @@ def _fetch_item_price(item_id: str):
         return None
 
 
+def _handle_gateway_message(msg_id: str, payload: dict):
+    correlation_id = payload.get("correlation_id")
+    bus = _get_bus()
+    if not correlation_id:
+        ack(bus, GATEWAY_STREAM, GROUP_GATEWAY, msg_id)
+        return
+    r = _get_r()
+    try:
+        result = route_gateway_message(payload, r)
+    except Exception as exc:
+        logger.error("Error processing %s: %s", correlation_id, exc, exc_info=True)
+        result = (400, {"error": "Internal server error"})
+    if result is not None:
+        _publish_gateway_response(correlation_id, result[0], result[1])
+    ack(bus, GATEWAY_STREAM, GROUP_GATEWAY, msg_id)
+
+
+def _handle_internal_message(msg_id: str, payload: dict):
+    bus = _get_bus()
+    try:
+        handle_internal_response(payload)
+    except Exception as exc:
+        logger.error("Error in internal consumer: %s", exc, exc_info=True)
+    ack(bus, INTERNAL_RESPONSE_STREAM, GROUP_INTERNAL, msg_id)
+
+
 def start_gateway_consumer():
-    while True:
-        try:
-            bus = _get_bus()
-            for msg_id, payload in read_pending_then_new(
-                bus, GATEWAY_STREAM, GROUP_GATEWAY
-            ):
-                correlation_id = payload.get("correlation_id")
-                r = _get_r()
-                result = None
-                try:
-                    result = route_gateway_message(payload, r)
-                except Exception as exc:
-                    logger.error(
-                        "Error processing %s: %s", correlation_id, exc, exc_info=True
-                    )
-                    result = (400, {"error": "Internal server error"})
-
-                if result is not None:
-                    _publish_gateway_response(correlation_id, result[0], result[1])
-
-                ack(bus, GATEWAY_STREAM, GROUP_GATEWAY, msg_id)
-        except Exception as exc:
-            logger.error("Gateway consumer error, retrying in 1s: %s", exc)
-            time.sleep(1)
+    run_gevent_consumer(_bus_pool, GATEWAY_STREAM, GROUP_GATEWAY, _handle_gateway_message, "Order gateway")
 
 
 def start_internal_consumer():
-    while True:
-        try:
-            bus = _get_bus()
-            for msg_id, payload in read_pending_then_new(
-                bus, INTERNAL_RESPONSE_STREAM, GROUP_INTERNAL
-            ):
-                try:
-                    handle_internal_response(payload)
-                except Exception as exc:
-                    logger.error("Error in internal consumer: %s", exc, exc_info=True)
-                ack(bus, INTERNAL_RESPONSE_STREAM, GROUP_INTERNAL, msg_id)
-        except Exception as exc:
-            logger.error("Internal consumer error, retrying in 1s: %s", exc)
-            time.sleep(1)
+    run_gevent_consumer(_bus_pool, INTERNAL_RESPONSE_STREAM, GROUP_INTERNAL, _handle_internal_message, "Order internal")
 
 
 def recovery_saga():
