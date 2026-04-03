@@ -18,7 +18,7 @@ Integration happened through shared reviews and the main branch.
 - Testing — Runner, Cases, Regression Coverage
 - Profiling — Measurement Passes, Performance Notes
 
-### Pedro Gomes Moreira
+### Pedro Gomes Moreira - 5699169 - pgomesmoreira@tudelft.nl
 - Benchmarking Suite — Scenarios, Repeatability, Load Shape (Shared Equally With Aditya)
 - TPC Suite — TPC Protocol Test Coverage: Fault Tolerance
 - SAGA Suite — SAGA Protocol Test Coverage: Fault Tolerance
