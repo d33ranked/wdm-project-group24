@@ -5,33 +5,33 @@
 How work was divided across the team. Overlap on TPC and SAGA was normal.
 Integration happened through shared reviews and the main branch.
 
-### Aditya Patil
+### Aditya Patil - 6495192 - A.C.Patil-1@student.tudelft.nl
 - TPC — Coordinator Path, Voting, In-Doubt Recovery (Shared Equally With Danil)
 - TPC Suite — Co-Authored With Danil
 - Replication Suite — Sentinel Failover, Service Scale-Out, Durability Cases
 - Benchmarking Suite — Launcher, Interactive Flow, Compose Glue (Shared Equally With Pedro)
 - Orchestrator — Engine Skeleton, Step Dispatch, Redis Checkpoints (Shared Equally With Ruben)
 
-### Danil Vorotilov
+### Danil Vorotilov - 5245672- D.Vorotilov-1@student.tudelft.nl
 - TPC — Stock And Payment Participants, Stream RPC Hardening (Shared Equally With Aditya)
 - TPC Suite — Co-Authored With Aditya
 - Testing — Runner, Cases, Regression Coverage
 - Profiling — Measurement Passes, Performance Notes
 
-### Pedro Gomes Moreira - 5699169 - pgomesmoreira@tudelft.nl
+### Pedro Gomes Moreira - 5699169 - P.GomesMoreira@student.tudelft.nl
 - Benchmarking Suite — Scenarios, Repeatability, Load Shape (Shared Equally With Aditya)
 - TPC Suite — TPC Protocol Test Coverage: Fault Tolerance
 - SAGA Suite — SAGA Protocol Test Coverage: Fault Tolerance
 - Code reviews, contributions in meetings
 
-### Ruben Van Seventer
+### Ruben Van Seventer - 5797799 - R.J.vanSeventer@student.tudelft.nl
 - Orchestrator — Suspend, Resume, Fail Semantics, Compensation Ordering (Shared Equally With Aditya)
 - SAGA — Coordinator, Correlation And Gateway Handoff
 - Nginx And Gateway Routing — TPC Versus SAGA Topologies
 - Redis Streams And Bus Integration — Consumer Groups, Internal Request Paths
 - Docker Compose — Multi-Replica Services, Depends-On And Health Wiring
 
-### Veselin Mitev
+### Veselin Mitev - 5812763 - V.Mitev@student.tudelft.nl
 - Replication -- Implemented the first version of replcation and automatic failover in the old PostgreSQL database, using Patroni and etcd as a DRDBMS. This was later replaced with Redis, so the code didn't survive.
 - Resource Controls -- Implemented CPU resource limitations via our start script and docker compose file, in order to test how well our system scales.
 - Cloud Deployment & Benchmarking -- As needed, deploys the system on a 96-(physical)-core AWS EC2 instance, and benchmarks using the Locust.
